@@ -19,7 +19,7 @@ evidence-grade report for defenders, consultants, and auditors.
 
 ```
 $ sudo sysmap -E ACME-2026-041 -a "v0idsnail" --fail-on warn
-=== sysmap v1.0.0 | 2026-10-23 14:03:55 CEST | web01 ===
+=== sysmap v1.0.1 | 2026-10-23 14:03:55 CEST | web01 ===
     engagement: ACME-2026-041
     auditor: v0idsnail
     executed as: root (uid 0) | modules: posture identity execsurf ...
@@ -30,7 +30,7 @@ $ sudo sysmap -E ACME-2026-041 -a "v0idsnail" --fail-on warn
 ...
 === summary ===
 findings: !! 3   ! 11   · 64
-=== survey complete — sysmap v1.0.0 ===
+=== survey complete — sysmap v1.0.1 ===
 ```
 
 ## Quick start
