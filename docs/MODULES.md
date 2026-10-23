@@ -112,7 +112,8 @@ correct hygiene.
 Splits on container detection. **Inside a container:** effective capability
 set decoded from `/proc/self/status` (sys_admin, sys_ptrace, sys_module,
 dac_override → `!!`), seccomp/no_new_privs state, uid-map identity check,
-writable `core_pattern` (`!!` — core_pattern-pipe escape), rw mounts of
+writable `core_pattern` (`!!` — core_pattern-pipe escape; a read-only
+`/proc/sys` runtime mount is detected and reported `·`), rw mounts of
 `/`, `/host`, `/proc`, `/sys`, readable Kubernetes service-account tokens
 (`!!`), visible kubelet data. **On a host:** docker/lxd group membership
 (`!!` — both are root-equivalent through their daemons).

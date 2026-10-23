@@ -3,6 +3,15 @@
 All notable changes to sysmap. Format follows Keep a Changelog; versioning
 follows SemVer.
 
+## [1.0.1] — 2026-10-23
+
+### Fixed
+- contain: core_pattern writability no longer trusts `[ -w ]` under uid 0 —
+  mode bits claim writable while the container runtime (docker/runc)
+  bind-mounts /proc/sys read-only. The covering mount's ro flag from
+  /proc/self/mountinfo is now checked first; runtime-masked paths report
+  `·` instead of a false `!!`. Found during pre-demo container testing.
+
 ## [1.0.0] — 2026-10-23
 
 First public release.

@@ -50,7 +50,7 @@
 #           find getcap getenforce grep hostname id ls ps sed ss netstat stat
 #           sudo systemctl systemd-detect-virt tr uname who.
 
-VERSION="1.0.0"
+VERSION="1.0.1"
 
 set -u
 LC_ALL=C
@@ -648,8 +648,18 @@ sec_contain() {
         [ -r /proc/self/uid_map ] && \
             awk 'NR==1{f=($1==$2)} END{exit(f?0:1)}' /proc/self/uid_map 2>/dev/null && \
             printf '· uid map is identity-mapped (no namespace remap)\n'
-        [ -w /proc/sys/kernel/core_pattern ] && \
+        # [ -w ] as root sees mode bits only; container runtimes bind-mount
+        # /proc/sys read-only — trust the covering mount's ro flag first
+        cpro=$(awk '$5=="/proc/sys/kernel/core_pattern"{l=28}
+            $5=="/proc/sys" && l<10 {l=10}
+            $5=="/proc" && l<6 {l=6}
+            l>m {m=l; ro=($6 ~ /^ro/)}
+            END {if (m) printf "%s", (ro ? "ro" : "rw")}' /proc/self/mountinfo 2>/dev/null)
+        if [ "$cpro" = ro ]; then
+            printf '· core_pattern on read-only mount (runtime-masked)\n'
+        elif [ -w /proc/sys/kernel/core_pattern ]; then
             printf '!! kernel core_pattern is writable\n'
+        fi
         awk '{mp=$5;o=$6;sep=0;for(i=7;i<=NF;i++) if($i=="-"){sep=i;break}
             fs=sep>0?$(sep+1):"?"
             if(mp=="/"||mp=="/host"||mp=="/proc"||mp=="/sys"){
