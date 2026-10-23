@@ -69,7 +69,10 @@ eleven cron spool locations (`/etc/crontab`, `/etc/cron.d`, the periodic
 dirs, `/var/spool/cron/crontabs`, `/var/spool/cron`, `/etc/crontabs` for
 Alpine, `/etc/periodic`, `/etc/anacrontab`), per-file ownership and
 write-bit analysis — root-scheduled programs that are non-root-owned or
-group/world-writable rate `!!`. systemd timers and running services (when
+group/world-writable rate `!!` — Debian/Ubuntu's stock `1730 root:crontab`
+spool is recognized as the setgid `crontab(1)` mechanism and reported `·`,
+but any other group with write access to a cron spool still rates `!!`.
+systemd timers and running services (when
 systemd is booted), writable unit files under `/etc/systemd/system`, and
 `rc.local` variants. A wildcard-injection scan flags cron commands passing
 glob arguments to tar/rsync/cp/chown/zip — the classic

@@ -11,6 +11,11 @@ follows SemVer.
   bind-mounts /proc/sys read-only. The covering mount's ro flag from
   /proc/self/mountinfo is now checked first; runtime-masked paths report
   `·` instead of a false `!!`. Found during pre-demo container testing.
+- sched: Debian/Ubuntu's stock `/var/spool/cron/crontabs` (mode 1730,
+  root:crontab) is no longer flagged `!!` group/world-writable — it is the
+  documented setgid crontab(1) mechanism. The exemption keys on the
+  resolved group name and exact mode; any other writable spool still
+  rates `!!`. Found during Debian pre-demo testing.
 
 ## [1.0.0] — 2026-10-23
 

@@ -310,16 +310,23 @@ kubectl ssh wget curl base64 xxd", k, " ")
 # ---------------------------------------------------------------------------
 _ssstat() {
     # $1=path  $2=y|n  (y = report clean entries)
-    local s m r u w
+    local s m mo r u w gn
     s=$(stat -c '%a %u %g %n' "$1" 2>/dev/null) || return 0
-    m=${s%% *}; r=${s#* }; u=${r%% *}
+    m=${s%% *}; r=${s#* }; u=${r%% *}; mo=$m
     while [ "${#m}" -lt 3 ]; do m="0$m"; done
     [ "${#m}" -eq 4 ] && m=${m#?}
     w=0; case $m in ?[2367]?|??[2367]) w=1 ;; esac
     if [ "$u" != "0" ]; then
         printf '!! %s (non-root-owned)\n' "$s"
     elif [ "$w" -eq 1 ]; then
-        printf '!! %s (group/world-writable)\n' "$s"
+        gn=$(stat -c '%G' "$1" 2>/dev/null)
+        if [ "$mo" = 1730 ] && [ "$gn" = crontab ]; then
+            # stock Debian/Ubuntu: setgid crontab(1) writes user spools via
+            # group 'crontab'; sticky + no world bits. Not a finding.
+            [ "$2" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$s"
+        else
+            printf '!! %s (group/world-writable)\n' "$s"
+        fi
     elif [ "$2" = "y" ]; then
         printf '· %s\n' "$s"
     fi
