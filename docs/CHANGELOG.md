@@ -9,8 +9,8 @@ follows SemVer.
 False-positive sweep, decoder and output-format bug fixes, and coverage
 gaps — from a ten-lens adversarial review. Severity recalibration changes
 exit codes under `--fail-on` on hosts that were previously false-flagged;
-`--fail-on info` now also counts `·` findings (previously identical to
-medium-only). If you gate CI on exit codes, re-baseline after upgrading.
+`--fail-on info` now also counts `·` findings (previously it counted
+only `!!` and `!` findings). If you gate CI on exit codes, re-baseline
 
 ### Fixed
 - sched: every per-user crontab/at spool file was flagged `!! non-root-
@@ -41,7 +41,8 @@ medium-only). If you gate CI on exit codes, re-baseline after upgrading.
 - hygiene: suid_dumpable=2 is the stock systemd-coredump/abrt default
   and safe (only =1 flags); ASLR =1 is partial, not "full ASLR off"; NFS
   `rw` must be an option token, not a path substring; fstab inventory
-  skips swap and kernel pseudo-filesystems.
+  skips swap and kernel interface filesystems (tmpfs entries retained —
+  their nosuid/noexec options are the signal).
 - contain: every stock container produced `! / mounted rw` +
   `! /proc mounted rw`; the escape-relevant signals are `/sys` and
   `/host` rw. An rw `/proc/sys` (core_pattern) is now reported even when

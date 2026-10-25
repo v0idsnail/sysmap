@@ -6,7 +6,7 @@ can never disagree about counts or ordering.
 ## Text mode (default)
 
 ```text
-=== sysmap v1.0.0 | 2026-10-23 14:03:55 CEST | web01 ===
+=== sysmap v1.1.0 | 2026-10-23 14:03:55 CEST | web01 ===
     engagement: ACME-2026-041
     auditor: v0idsnail
     executed as: root (uid 0) | modules:  posture identity
@@ -25,7 +25,7 @@ notable (!!) findings:
 modules failed: 0
 note: run as root for full coverage (...)
 review and redact before sharing outside the engagement
-=== survey complete — sysmap v1.0.0 ===
+=== survey complete — sysmap v1.1.0 ===
 ```
 
 Marker spacing is normalized by the render filter — every finding line is

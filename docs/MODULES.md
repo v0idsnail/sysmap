@@ -119,12 +119,15 @@ usually just disabled in resolved.conf.
 
 ## secrets
 
-Credential-bearing material, reported by **path and mode — file contents are
-never printed**. SSH private keys under /root, /home, /etc/ssh with
-mode-based severity calibrated to read bits: group/world-readable `!!`
-(a mode-0644 key — the canonical OpenSSH "Permissions 0644 are too open"
-case — is the headline example); your own owner-only key as non-root, or
-any owner-only key as root, is `·` — correct hygiene, listed for
+Credential files are reported by **path and mode — their contents are
+never printed**; the one exception is credential *indicators* in fstab
+and package-manager configs, where the matching line is quoted for
+triage (treat those lines as sensitive when sharing the report). SSH
+private keys under /root, /home, /etc/ssh with mode-based severity
+calibrated to read bits: group/world-readable `!!` (a mode-0644 key —
+the canonical OpenSSH "Permissions 0644 are too open" case — is the
+headline example); your own owner-only key as non-root, or any
+owner-only key as root, is `·` — correct hygiene, listed for
 completeness. Application configs that typically hold credentials
 (`.env`, `wp-config.php`, `settings.py`, `database.yml`, `config.php`).
 Histories (sizes only). Docker registry stores are content-gated: `!!`
@@ -135,8 +138,6 @@ when group/world-readable, `!` otherwise. `.netrc`, `.aws/credentials`,
 `.kube/config`, and podman's `auth.json` are listed `!`.
 git-credentials (with mode). cloud-init user-data `!!` only when the
 content matches secret-looking patterns; every cloud image has the file.
-Credential indicators in fstab and package-manager configs (the matching
-line, for triage).
 
 **Reading:** this module is your to-triage list, not your to-fix list — a
 `· ssh key present (mode 600, owner-only)` on the admin's own host is
@@ -173,8 +174,9 @@ with `no_root_squash` (`!!`) — a path containing the letters "rw" under a
 read-only export is not a finding; no option list means the exports(5)
 default, rw. Sticky-bit check on /tmp and /var/tmp, world-writable files
 under /etc, and a mount-option inventory (nosuid/noexec coverage) from
-fstab with a `/proc/self/mountinfo` fallback (swap and kernel
-pseudo-filesystems excluded from the inventory).
+fstab with a `/proc/self/mountinfo` fallback (swap and kernel interface
+filesystems excluded; tmpfs entries are retained — their nosuid/noexec
+options are the hardening signal).
 
 **Reading:** `! kernel.kptr_restrict=0` and
 `! kernel.unprivileged_bpf_disabled=0` are the two most common findings —
