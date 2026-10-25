@@ -383,8 +383,9 @@ MNTS
 _ssline() {
     # $1 = stat line · $2 = y|n (y = also report clean entries)
     [ -n "$1" ] || return 0
+    local flag=$2
     set -f
-    set -- $1 "$2"
+    set -- $1
     set +f
     local mo=$1 u=$2 gn=$4 path=$5 m=$1 line w=0
     line="$1 $2 $3 $5"
@@ -411,11 +412,11 @@ _ssline() {
         if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && [ "$gn" = "crontab" ]; then
             # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools
             # via group 'crontab' (1730/1770, sticky). Not a finding.
-            [ "$2" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
+            [ "$flag" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
         else
             printf '!! %s (group/world-writable)\n' "$line"
         fi
-    elif [ "$2" = "y" ]; then
+    elif [ "$flag" = "y" ]; then
         printf '· %s\n' "$line"
     fi
 }
