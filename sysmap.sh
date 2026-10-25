@@ -51,7 +51,7 @@
 #           find getcap getenforce grep hostname id ls ps sed ss netstat stat
 #           sudo systemctl systemd-detect-virt tr uname who.
 
-VERSION="1.0.1"
+VERSION="1.1.0"
 
 set -u
 LC_ALL=C

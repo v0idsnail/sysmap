@@ -19,18 +19,18 @@ evidence-grade report for defenders, consultants, and auditors.
 
 ```
 $ sudo sysmap -E ACME-2026-041 -a "v0idsnail" --fail-on warn
-=== sysmap v1.0.1 | 2026-10-23 14:03:55 CEST | web01 ===
+=== sysmap v1.1.0 | 2026-10-23 14:03:55 CEST | web01 ===
     engagement: ACME-2026-041
     auditor: v0idsnail
     executed as: root (uid 0) | modules: posture identity execsurf ...
     read-only survey — no changes made to this host
 
 ==[ execution-surfaces ]==
-!!  /usr/bin/newuidmap cap_setuid=ep — broad capability grant
+·  /usr/bin/newuidmap cap_setuid=ep — stock shadow-utils subuid helper
 ...
 === summary ===
 findings: !! 3   ! 11   · 64
-=== survey complete — sysmap v1.0.1 ===
+=== survey complete — sysmap v1.1.0 ===
 ```
 
 ## Quick start
@@ -58,7 +58,7 @@ sudo ./sysmap.sh --json -E ACME-2026-041 | your-tracker-import
 | `execsurf` | SUID/SGID binaries, file capabilities, PATH writability, dynamic-loader configuration |
 | `sched` | cron spools (all distro layouts), systemd timers/units, rc.local, wildcard-injection candidates |
 | `netsurf` | listening sockets (ss → netstat → /proc/net fallback), runtime sockets, resolvers, gateway |
-| `secrets` | SSH keys, histories, docker/git credentials, cloud-init, config-file credential indicators |
+| `secrets` | SSH keys, histories, docker/git/cloud credentials, systemd credential stores, .netrc/.aws/.kube, config-file credential indicators |
 | `contain` | container detection, capability sets, seccomp, mounts, orchestrator tokens, docker/lxd groups |
 | `hygiene` | kernel hardening sysctls, NFS exports, sticky bits, world-writable files, mount options |
 

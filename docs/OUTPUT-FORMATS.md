@@ -53,7 +53,7 @@ One JSON object per line. Two record types:
 | `auditor` | string | From `-a`; empty string if not given. |
 | `module` | string | Module banner the finding appeared under (`posture`, `identity-access`, `execution-surfaces`, `scheduled-work`, `network-surface`, `secrets`, `containers`, `hygiene`). |
 | `severity` | string | `high` (`!!`) · `medium` (`!`) · `info` (`·`). |
-| `msg` | string | The finding text, JSON-escaped: backslash, quote, tab, CR escaped; other control characters stripped. |
+| `msg` | string | The finding text, JSON-escaped: backslash, quote, tab, CR escaped (mawk-safe replacement form); other control characters stripped; invalid UTF-8 sequences replaced with `?`. |
 
 ### `sysmap.summary/v1` — final record
 

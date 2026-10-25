@@ -16,7 +16,7 @@ script header.
 | `-E`, `--engagement` | `ID` | Tag every line of output — header, each JSONL record — with an engagement/case ID. Control characters rejected (exit 64). |
 | `-a`, `--auditor` | `NAME` | Record the auditor name in the run header and every JSONL record. Control characters rejected (exit 64). |
 | `--json` | — | Emit JSONL instead of text: one `sysmap.finding/v1` record per finding plus a final `sysmap.summary/v1` record. See [OUTPUT-FORMATS.md](OUTPUT-FORMATS.md). |
-| `--fail-on` | `warn` \| `info` | Gate the exit code: `warn` → exit 2 if any `!!` finding exists; `info` → exit 2 if any `!!` or `!` finding exists. Default off. |
+| `--fail-on` | `warn` \| `info` | Gate the exit code: `warn` → exit 2 if any `!!` finding exists; `info` → exit 2 if any finding exists (`!!`, `!`, or `·`). Default off. |
 | `-q`, `--quiet` | — | Text mode only: suppress `·` informational lines; keep `!!` and `!` findings and the summary. |
 | `--no-color` | — | Reserved; output is plain text by default. |
 | `--list-modules` | — | Print the module names one per line, exit 0. Machine-readable. |
