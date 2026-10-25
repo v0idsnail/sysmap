@@ -452,34 +452,53 @@ sec_netsurf() {
             case "$pf" in tcp*) st="0A" ;; *) st="07" ;; esac
             case "$pf" in *6) v6=1 ;; *) v6=0 ;; esac
             awk -v S="$st" -v V6="$v6" -v PF="$pf" '
+                # procnet-decode
                 function hx(c) { return index("0123456789abcdef", tolower(c)) - 1 }
                 NR>1 && $4==S {
                     la=$2
                     split(la, hp, ":")
-                    p = hx(substr(hp[2],1,1))*16 + hx(substr(hp[2],2,1))
+                    if (length(hp[2]) != 4) next
+                    # port: all 4 hex digits (v1.0.1 read only the first 2)
+                    p = hx(substr(hp[2],1,1))*4096 + hx(substr(hp[2],2,1))*256 \
+                      + hx(substr(hp[2],3,1))*16 + hx(substr(hp[2],4,1))
                     if (V6) {
                         hex = hp[1]
                         if (length(hex) != 32) next
                         for (i = 1; i <= 32; i++)
                             if (hx(substr(hex,i,1)) < 0) next
-                        for (i = 1; i <= 8; i++)
-                            grp[i] = hx(substr(hex,i*4-3,1))*4096 + hx(substr(hex,i*4-2,1))*256 \
-                                   + hx(substr(hex,i*4-1,1))*16 + hx(substr(hex,i*4,1))
-                        bs=bl=cs=cl=0
-                        for (i=1;i<=8;i++) {
-                            if (grp[i]==0) { if(cl==0)cs=i; cl++; if(cl>bl){bl=cl;bs=cs} }
-                            else cl=0
+                        # the kernel stores each 32-bit word little-endian;
+                        # decode word k into two big-endian 16-bit groups
+                        for (k = 1; k <= 4; k++) {
+                            b = (k-1)*8
+                            grp[k*2-1] = (hx(substr(hex,b+7,1))*16 + hx(substr(hex,b+8,1)))*256 \
+                                       + hx(substr(hex,b+5,1))*16 + hx(substr(hex,b+6,1))
+                            grp[k*2]   = (hx(substr(hex,b+3,1))*16 + hx(substr(hex,b+4,1)))*256 \
+                                       + hx(substr(hex,b+1,1))*16 + hx(substr(hex,b+2,1))
                         }
-                        if (bl>=2) {
-                            L=""; for(i=1;i<bs;i++) L=L (L?":":"") sprintf("%x",grp[i])
-                            R=""; for(i=bs+bl;i<=8;i++) R=R (R?":":"") sprintf("%x",grp[i])
-                            addr = L "::" R
+                        # IPv4-mapped addresses: print the dotted form so
+                        # loopback/all-interfaces classification can see it
+                        if (grp[1]==0 && grp[2]==0 && grp[3]==0 && grp[4]==0 && \
+                            grp[5]==0 && grp[6]==65535) {
+                            addr = sprintf("::ffff:%d.%d.%d.%d", \
+                                int(grp[7]/256), grp[7]%256, int(grp[8]/256), grp[8]%256)
                         } else {
-                            addr = sprintf("%x",grp[1])
-                            for(i=2;i<=8;i++) addr = addr ":" sprintf("%x",grp[i])
+                            bs=bl=cs=cl=0
+                            for (i=1;i<=8;i++) {
+                                if (grp[i]==0) { if(cl==0)cs=i; cl++; if(cl>bl){bl=cl;bs=cs} }
+                                else cl=0
+                            }
+                            if (bl>=2) {
+                                L=""; for(i=1;i<bs;i++) L=L (L?":":"") sprintf("%x",grp[i])
+                                R=""; for(i=bs+bl;i<=8;i++) R=R (R?":":"") sprintf("%x",grp[i])
+                                addr = L "::" R
+                            } else {
+                                addr = sprintf("%x",grp[1])
+                                for(i=2;i<=8;i++) addr = addr ":" sprintf("%x",grp[i])
+                            }
                         }
                     } else {
                         hex = hp[1]
+                        if (length(hex) != 8) next
                         addr = sprintf("%d.%d.%d.%d", \
                             hx(substr(hex,7,1))*16+hx(substr(hex,8,1)), \
                             hx(substr(hex,5,1))*16+hx(substr(hex,6,1)), \
@@ -487,7 +506,9 @@ sec_netsurf() {
                             hx(substr(hex,1,1))*16+hx(substr(hex,2,1)))
                     }
                     printf "%s %s %d uid=%s\n", PF, addr, p, $8
-                }' "/proc/net/$pf" 2>/dev/null | \
+                }
+                # procnet-decode-end
+            ' "/proc/net/$pf" 2>/dev/null | \
             while read -r proto addr port uid_n; do
                 _classify_addr "$addr" "$port" "$proto" "$uid_n"
             done
