@@ -4,6 +4,19 @@ All notable changes to sysmap. Format follows Keep a Changelog; versioning
 follows SemVer.
 
 
+## [1.1.1] — 2026-10-25
+
+### Fixed
+- sched: the Debian at(1) spool exemption keyed on group `crontab`, but
+  stock `/var/spool/cron/atjobs` is `daemon:daemon` mode `1770` — a fresh
+  `at` install on stock trixie flagged `! group/world-writable (executes
+  as uid 1)`. The exemption now matches the atjobs path exactly (mode
+  1770, daemon:daemon); any other writable layout still rates `!`/`!!`.
+  Found during the Debian+Docker platform run — the runbook's at control
+  had never executed because `at` was missing from its own setup line.
+  New `tests/spool-fixture.sh` replays the spool severity table with a
+  PATH-shimmed `stat(1)`, no root required.
+
 ## [1.1.0] — 2026-10-25
 
 False-positive sweep, decoder and output-format bug fixes, and coverage

@@ -51,7 +51,7 @@
 #           find getcap getenforce grep hostname id ls ps sed ss netstat stat
 #           sudo systemctl systemd-detect-virt tr uname who.
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 set -u
 LC_ALL=C
@@ -389,6 +389,7 @@ curl base64 xxd", k, " ")
 # ---------------------------------------------------------------------------
 # 4. sched — cron, timers, service units, rc.local
 # ---------------------------------------------------------------------------
+# ssline
 # classify one line of `stat -c '%a %u %g %n'` output
 _ssline() {
     # $1 = stat line · $2 = y|n (y = also report clean entries).
@@ -407,15 +408,26 @@ _ssline() {
     while [ "${#m}" -lt 3 ]; do m="0$m"; done
     [ "${#m}" -eq 4 ] && m=${m#?}
     case $m in ?[2367]?|??[2367]) w=1 ;; esac
-    # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools via
+    # stock Debian/Ubuntu: setgid crontab(1) writes user crontab spools via
     # group 'crontab' (1730/1770, sticky) — covers the spool DIRECTORIES
     # themselves (probed with y) and any file using the same mechanism.
-    # The group name is stat'ed lazily: only writable root-owned paths
-    # reach this branch. Checked before the per-user spool case below,
-    # which also matches the directory paths.
+    # The group name is stat'ed lazily: only writable paths reach this
+    # branch. Checked before the per-user spool case below, which also
+    # matches the directory paths.
     if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && \
        [ "$(stat -c '%G' "$path" 2>/dev/null)" = "crontab" ]; then
         [ "$flag" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
+        return 0
+    fi
+    # Debian's at(1) spool dir is daemon:daemon 1770, not root:crontab —
+    # 1.1.0 keyed the exemption on group 'crontab' only, so stock atjobs
+    # fell through as '! executes as uid 1' (live on trixie 2026-10-25;
+    # the runbook at control had never run before `at` joined its setup).
+    # Exact path + exact mode + daemon ownership; anything else still
+    # flags through the generic spool case below.
+    if [ "$mo" = "1770" ] && [ "$path" = "/var/spool/cron/atjobs" ] && \
+       [ "$(stat -c '%U %G' "$path" 2>/dev/null)" = "daemon daemon" ]; then
+        [ "$flag" = y ] && printf '· %s (debian at(1) spool mechanism)\n' "$line"
         return 0
     fi
     case "$path" in
@@ -444,6 +456,7 @@ _ssstat() {
     # $1=path $2=y|n — single-path convenience wrapper
     _ssline "$(stat -c '%a %u %g %n' "$1" 2>/dev/null)" "$2"
 }
+# ssline-end
 sec_sched() {
     local p f sl sls res cands scripts SCT c t ln p1
     printf '==[ scheduled-work ]==\n'

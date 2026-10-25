@@ -91,7 +91,8 @@ per-user spool files are *supposed* to be user-owned — crond/atd execute
 them as the owner — so only write bits are checked there (writable
 root-owned `!!`, writable user-owned `!`). Debian/Ubuntu's stock
 `1730`/`1770 root:crontab` spool directories are recognized as the setgid
-`crontab(1)` mechanism and reported `·`. systemd timers and running
+`crontab(1)` mechanism and reported `·`, as is Debian's `daemon:daemon
+1770` at-jobs spool (`at(1)` mechanism). systemd timers and running
 services, writable unit files under `/etc/systemd/system`, and `rc.local`
 variants. The wildcard-injection scan parses each file in its own format
 (7-field system crontabs keep the user at field 6 — the command is field
