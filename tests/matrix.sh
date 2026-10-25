@@ -10,12 +10,14 @@ fail=0
 tmp=$(mktemp -d) || exit 1
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# sanity: exactly one banner and one rc sentinel per module
-sentinels() { # outfile nmod_expected
+# banner sanity: exactly one banner per module. The \001rc sentinels are
+# internal to the producer->filter stream and never reach the rendered
+# report — a clean exit 0 IS the sentinel contract (the filter exits 1
+# when sentinels go missing).
+banners() { # outfile nmod_expected
     b=$(grep -c '^==\[ ' "$1" 2>/dev/null || printf 0)
-    s=$(grep -c "$(printf '\001')rc=" "$1" 2>/dev/null || printf 0)
-    [ "$b" = "$2" ] && [ "$s" = "$2" ] && return 0
-    printf '  sentinels: banners=%s rc=%s (want %s)\n' "$b" "$s" "$2"
+    [ "$b" = "$2" ] && return 0
+    printf '  banners=%s (want %s)\n' "$b" "$2"
     return 1
 }
 
@@ -27,7 +29,7 @@ run_one() { # label shell_binary
     rc=$?
     ok=1
     [ "$rc" -eq 0 ] || { printf 'FAIL %s: exit %d\n' "$1" "$rc"; ok=0; }
-    sentinels "$out" 8 || { printf 'FAIL %s: sentinel count\n' "$1"; ok=0; }
+    banners "$out" 8 || { printf 'FAIL %s: banner count\n' "$1"; ok=0; }
     grep -q 'survey complete' "$out" || { printf 'FAIL %s: no completion footer\n' "$1"; ok=0; }
     # json well-formed under this shell
     "$sh_" "$SM" --json 2>/dev/null | jq -e -c . >/dev/null 2>&1 \
