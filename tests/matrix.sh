@@ -21,29 +21,30 @@ banners() { # outfile nmod_expected
     return 1
 }
 
-run_one() { # label shell_binary
-    sh_=$2
-    command -v "$sh_" >/dev/null 2>&1 || { printf 'skip %s (not installed)\n' "$1"; return 0; }
-    out=$tmp/"$1".txt
-    "$sh_" "$SM" >"$out" 2>"$tmp/$1.err"
+run_one() { # label command...  (command may be multi-word: "busybox sh")
+    label=$1; shift
+    cmd=$*
+    command -v "$1" >/dev/null 2>&1 || { printf 'skip %s (not installed)\n' "$label"; return 0; }
+    out=$tmp/"$label".txt
+    $cmd "$SM" >"$out" 2>"$tmp/$label.err"
     rc=$?
     ok=1
     [ "$rc" -eq 0 ] || { printf 'FAIL %s: exit %d\n' "$1" "$rc"; ok=0; }
     banners "$out" 8 || { printf 'FAIL %s: banner count\n' "$1"; ok=0; }
     # json well-formed under this shell (jq optional — skip when absent)
     if command -v jq >/dev/null 2>&1; then
-        "$sh_" "$SM" --json 2>/dev/null | jq -e -c . >/dev/null 2>&1 \
-            || { printf 'FAIL %s: JSONL not jq-clean\n' "$1"; ok=0; }
+        $cmd "$SM" --json 2>/dev/null | jq -e -c . >/dev/null 2>&1 \
+            || { printf 'FAIL %s: JSONL not jq-clean\n' "$label"; ok=0; }
     else
-        printf 'skip %s: jq not installed\n' "$1"
+        printf 'skip %s: jq not installed\n' "$label"
     fi
     # usage error contract
-    "$sh_" "$SM" no-such-module >/dev/null 2>&1
-    [ "$?" -eq 64 ] || { printf 'FAIL %s: usage exit != 64\n' "$1"; ok=0; }
+    $cmd "$SM" no-such-module >/dev/null 2>&1
+    [ "$?" -eq 64 ] || { printf 'FAIL %s: usage exit != 64\n' "$label"; ok=0; }
     # fail-on gate
-    "$sh_" "$SM" --fail-on warn >/dev/null 2>&1
-    [ "$?" -eq 2 ] || { printf 'FAIL %s: fail-on warn exit != 2\n' "$1"; ok=0; }
-    [ "$ok" -eq 1 ] && printf 'ok   %s (%s)\n' "$1" "$sh_"
+    $cmd "$SM" --fail-on warn >/dev/null 2>&1
+    [ "$?" -eq 2 ] || { printf 'FAIL %s: fail-on warn exit != 2\n' "$label"; ok=0; }
+    [ "$ok" -eq 1 ] && printf 'ok   %s (%s)\n' "$label" "$cmd"
     [ "$ok" -eq 1 ] || fail=1
 }
 
@@ -51,7 +52,7 @@ printf 'sysmap matrix: %s\n' "$SM"
 run_one sh    sh
 run_one bash  bash
 run_one dash  dash
-run_one busybox-ash busybox   # busybox sh
+run_one busybox-ash busybox sh
 
 # awk-variant spot check: JSON escaping of backslashes via engagement tag
 for awkbin in awk gawk mawk busybox; do
