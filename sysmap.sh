@@ -266,30 +266,28 @@ sec_execsurf() {
                 if (sep == 0) next
                 fst = $(sep+1); mp = $5; opt = $6
                 if (fst ~ /^(proc|sysfs|tmpfs|devtmpfs|devpts|cgroup2?|securityfs|debugfs|tracefs|pstore|bpf|efivarfs|fusectl|configfs|autofs|hugetlbfs|mqueue|nsfs|binfmt_misc|rpc_pipefs)$/) next
-                if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\.sshfs|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/) next
+                if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\..*|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/) next
                 if (mp ~ /^\/(proc|sys|dev)(\/|$)/) next
                 if (opt ~ /(^|,)nosuid(,|$)/) next
                 if (!seen[mp]++) print mp
             }' /proc/self/mountinfo 2>/dev/null)
-        # network filesystems are noted, never walked: the sweep would be
-        # remote I/O against the server (slow, racy) — client-side suid on
-        # an nfs mount is a real vector, so it is surfaced as a note
+        # network/fuse filesystems are noted, never walked: the sweep would
+        # be remote or daemon-translated I/O (slow, racy, sometimes billable
+        # and logged server-side) — client-side suid on such a mount is a
+        # real vector, so the mount is surfaced for manual audit instead.
+        # Keep this list in sync with the walk filter above.
         awk '{
             sep = 0
             for (i = 1; i <= NF; i++) if ($i == "-") { sep = i; break }
             if (sep == 0) next
             fst = $(sep+1); mp = $5
-            if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\.sshfs|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/ && !n[mp]++)
-                printf "· network mount present, not walked (audit server-side / mount opts): %s (%s)\n", mp, fst
+            if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\..*|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/ && !n[mp]++)
+                printf "· network/fuse mount present, not walked (audit manually): %s (%s)\n", mp, fst
         }' /proc/self/mountinfo 2>/dev/null
         [ -n "$mnts" ] || mnts="/"
-        {
-            while IFS= read -r mnt; do
-                find "$mnt" -xdev -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null
-            done <<MNTS
-$mnts
-MNTS
-        } | awk '
+        printf '%s\n' "$mnts" | while IFS= read -r mnt; do
+            find "$mnt" -xdev -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null
+        done | awk '
             BEGIN {
                 n = split("awk python python3 perl php ruby node lua less more man \
 vi vim vim.tiny vim.basic nvim gvim find env cp mv tar gzip tee nmap nc \
@@ -312,13 +310,9 @@ curl base64 xxd", k, " ")
         done
     fi
     if [ -n "$gc" ] && [ "$have_fa" ]; then
-        {
-            while IFS= read -r mnt; do
-                "$gc" -r "$mnt" 2>/dev/null
-            done <<MNTS
-$mnts
-MNTS
-        } | awk '
+        printf '%s\n' "$mnts" | while IFS= read -r mnt; do
+            "$gc" -r "$mnt" 2>/dev/null
+        done | awk '
             /^\/\.snapshots\// { next }   # snapper btrfs snapshots: same files, skip dupes
             /^\/usr\/bin\/new(uid|gid)map / { printf "· %s — stock shadow-utils subuid helper\n", $0; next }
             /cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_dac_override|cap_dac_read_search|cap_sys_module/ {
@@ -428,7 +422,7 @@ _ssstat() {
     _ssline "$(stat -c '%a %u %g %G %n' "$1" 2>/dev/null)" "$2"
 }
 sec_sched() {
-    local p f sl sls cands scripts SCT c t ln p1
+    local p f sl sls res cands scripts SCT c t ln p1
     printf '==[ scheduled-work ]==\n'
     if ! command -v stat >/dev/null 2>&1; then
         printf '· stat unavailable — scheduled-work module skipped\n'
@@ -445,19 +439,22 @@ sec_sched() {
             cands="$cands $p"
         elif [ -d "$p" ]; then
             sls=$(find "$p" -maxdepth 2 -type f -exec stat -c '%a %u %g %G %n' {} + 2>/dev/null)
-            while IFS= read -r sl; do
+            # pipe-fed (heredocs materialize temp files on bash 5.0); the
+            # subshell emits @F markers so cands/scripts still accumulate
+            res=$(printf '%s\n' "$sls" | while IFS= read -r sl; do
                 [ -n "$sl" ] || continue
                 f=${sl##* }
                 case " $cands $scripts " in *" $f "*) continue ;; esac
-                case "$f" in
-                    /etc/cron.hourly/*|/etc/cron.daily/*|/etc/cron.weekly/*|/etc/cron.monthly/*|/etc/periodic/*)
-                        scripts="$scripts $f" ;;
-                    *) cands="$cands $f" ;;
-                esac
+                printf '@F %s\n' "$f"
                 _ssline "$sl" n
-            done <<EOF
-$sls
-EOF
+            done)
+            [ -n "$res" ] || continue
+            case "$p" in
+                /etc/cron.hourly|/etc/cron.daily|/etc/cron.weekly|/etc/cron.monthly|/etc/periodic)
+                    scripts="$scripts$(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
+                *)  cands="$cands$(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
+            esac
+            printf '%s\n' "$res" | grep -v '^@F '
         fi
     done
     # Wildcard injection scan. Cron-format files are parsed per format so

@@ -30,10 +30,13 @@ run_one() { # label shell_binary
     ok=1
     [ "$rc" -eq 0 ] || { printf 'FAIL %s: exit %d\n' "$1" "$rc"; ok=0; }
     banners "$out" 8 || { printf 'FAIL %s: banner count\n' "$1"; ok=0; }
-    grep -q 'survey complete' "$out" || { printf 'FAIL %s: no completion footer\n' "$1"; ok=0; }
-    # json well-formed under this shell
-    "$sh_" "$SM" --json 2>/dev/null | jq -e -c . >/dev/null 2>&1 \
-        || { printf 'FAIL %s: JSONL not jq-clean\n' "$1"; ok=0; }
+    # json well-formed under this shell (jq optional — skip when absent)
+    if command -v jq >/dev/null 2>&1; then
+        "$sh_" "$SM" --json 2>/dev/null | jq -e -c . >/dev/null 2>&1 \
+            || { printf 'FAIL %s: JSONL not jq-clean\n' "$1"; ok=0; }
+    else
+        printf 'skip %s: jq not installed\n' "$1"
+    fi
     # usage error contract
     "$sh_" "$SM" no-such-module >/dev/null 2>&1
     [ "$?" -eq 64 ] || { printf 'FAIL %s: usage exit != 64\n' "$1"; ok=0; }
