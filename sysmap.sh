@@ -27,7 +27,8 @@
 #   -E, --engagement ID tag all output with an engagement/case ID
 #   -a, --auditor NAME  record the auditor name in the run header
 #       --json          emit JSONL (one record per finding + summary) on stdout
-#       --fail-on LVL   exit 2 if findings at level warn (!! ) or higher exist
+#       --fail-on LVL   exit 2 if findings exist at/above the level:
+#                        warn = !! findings · info = any finding
 #   -q, --quiet         findings only — suppress · informational lines
 #       --no-color      (output is plain text by default; reserved)
 #       --list-modules  print module names, one per line, exit 0
@@ -881,13 +882,48 @@ run_survey() {
 #   json mode — one JSONL record per finding + header + summary records
 # Exit status of the filter IS the survey exit contract:
 #   0 ok · 1 module failure · 2 --fail-on gate tripped
-run_survey 2>/dev/null | awk \
+ROOTNOTE=0
+[ "$EUID_N" -ne 0 ] && ROOTNOTE=1
+# metadata reaches the filter via ENVIRON, not -v: awk processes backslash
+# escapes in -v values, silently rewriting tags like "ENG\2026" (octal
+# escape interpretation, verified end-to-end). Environment passing is literal.
+run_survey 2>/dev/null | \
+SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
     -v MODE="$JSON" -v QUIET="$QUIET" -v FAILON="$FAILON" -v NMOD="$NMOD" \
-    -v VER="$VERSION" -v HOST="$HN" -v ENG="$ENG" -v AUD="$AUDITOR" -v TS="$NOW" \
-    -v ROOTNOTE="$([ "$EUID_N" -ne 0 ] && printf 1 || printf 0)" \
+    -v VER="$VERSION" -v ROOTNOTE="$ROOTNOTE" \
 '
+    BEGIN {
+        HOST = ENVIRON["SM_HOST"]
+        ENG  = ENVIRON["SM_ENG"]
+        AUD  = ENVIRON["SM_AUD"]
+        TS   = ENVIRON["SM_TS"]
+        for (i = 0; i < 256; i++) T[sprintf("%c", i)] = i
+    }
+    function u8clean(s,   i, n, b, len, j, c, ok, out) {
+        # LC_ALL=C: one byte per char. Keep valid UTF-8 sequences,
+        # replace anything else with ? so JSONL stays parseable by
+        # strict consumers (python json rejects raw Latin-1 bytes).
+        out = ""; n = length(s)
+        for (i = 1; i <= n; i++) {
+            b = T[substr(s, i, 1)] + 0
+            if (b < 128) { out = out substr(s, i, 1); continue }
+            if (b >= 194 && b <= 223) len = 1
+            else if (b >= 224 && b <= 239) len = 2
+            else if (b >= 240 && b <= 244) len = 3
+            else { out = out "?"; continue }
+            ok = (i + len <= n)
+            for (j = 1; ok && j <= len; j++) {
+                c = T[substr(s, i + j, 1)] + 0
+                if (c < 128 || c > 191) ok = 0
+            }
+            if (ok) { out = out substr(s, i, 1 + len); i += len }
+            else out = out "?"
+        }
+        return out
+    }
     function esc(s) {
-        gsub(/\\/, "\\\\", s)
+        s = u8clean(s)
+        gsub(/\\/, "&&", s)
         gsub(/"/, "\\\"", s)
         gsub(/\t/, "\\t", s)
         gsub(/\r/, "\\r", s)
@@ -943,7 +979,7 @@ run_survey 2>/dev/null | awk \
         if (sent+0 != NMOD+0 || bcount+0 != NMOD+0) exit 1
         if (modfail+0 > 0) exit 1
         if (FAILON == "warn" && hi+0 > 0) exit 2
-        if (FAILON == "info" && (hi+0 > 0 || med+0 > 0)) exit 2
+        if (FAILON == "info" && (hi+0 > 0 || med+0 > 0 || info+0 > 0)) exit 2
         exit 0
     }
 '
