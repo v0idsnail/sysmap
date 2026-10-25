@@ -721,7 +721,7 @@ sec_secrets() {
 # 7. contain — container / Docker/Kubernetes posture
 # ---------------------------------------------------------------------------
 sec_contain() {
-    local in_ct cmark c val uid user pgid grp gline gid members cpro
+    local in_ct cmark c up user pgid
     in_ct=0; cmark=""
     [ -f /.dockerenv ]        && in_ct=1 && cmark="docker env marker"
     [ -f /run/.containerenv ] && in_ct=1 && cmark="podman env marker"
@@ -729,31 +729,43 @@ sec_contain() {
        grep -qsE '(docker|containerd|kubepods|libpod|lxc|crio)' /proc/1/cgroup 2>/dev/null; then
         in_ct=1; cmark="cgroup placement"
     fi
+    # cgroup namespaces hide pod placement on cgroup v2 (/proc/1/cgroup
+    # reads 0::/) — the service env var survives that
+    if [ "$in_ct" -eq 0 ] && [ -r /proc/1/environ ] && \
+       grep -qs KUBERNETES_SERVICE_HOST /proc/1/environ 2>/dev/null; then
+        in_ct=1; cmark="kubernetes (pid 1 env)"
+    fi
     printf '==[ containers ]==\n'
     if [ "$in_ct" -eq 1 ]; then
         printf '· container environment detected (%s)\n' "$cmark"
-        for c in $(awk '/^CapEff:/{
-            s=tolower($2); n=length(s); hx="0123456789abcdef"
-            d0=n>=1?index(hx,substr(s,n,1))-1:0
-            d4=n>=5?index(hx,substr(s,n-4,1))-1:0
-            d5=n>=6?index(hx,substr(s,n-5,1))-1:0
-            if(d4%2) print "sys_module"
-            if(int(d0/2)%2) print "dac_override"
-            if(int(d4/8)%2) print "sys_ptrace"
-            if(int(d5/2)%2) print "sys_admin"
-            exit}' /proc/self/status 2>/dev/null); do
-            printf '!! high-impact capability in effective set: %s\n' "$c"
+        awk '/^CapEff:/{
+                s=tolower($2); n=length(s); hx="0123456789abcdef"
+                d0=n>=1?index(hx,substr(s,n,1))-1:0
+                d4=n>=5?index(hx,substr(s,n-4,1))-1:0
+                d5=n>=6?index(hx,substr(s,n-5,1))-1:0
+                if(d4%2) print "cap sys_module"
+                if(int(d0/2)%2) print "cap dac_override"
+                if(int(d0/4)%2) print "cap dac_read_search"
+                if(int(d4/8)%2) print "cap sys_ptrace"
+                if(int(d5/2)%2) print "cap sys_admin"}
+            /^Seccomp:/{s=$2} /^NoNewPrivs:/{nn=$2}
+            END{
+                if(s!=""||nn!=""){
+                    m=s==2?"filter":(s==1?"strict":"off")
+                    printf "info seccomp=%s(%s) no_new_privs=%s\n",s,m,nn}}' \
+            /proc/self/status 2>/dev/null | \
+        while IFS= read -r c; do
+            case "$c" in
+                'cap '*) printf '!! high-impact capability in effective set: %s\n' "${c#cap }" ;;
+                *)       printf '· %s\n' "$c" ;;
+            esac
         done
-        val=$(awk '/^Seccomp:/{s=$2} /^NoNewPrivs:/{n=$2} END{
-            if(s==""&&n=="") exit
-            m=s==2?"filter":(s==1?"strict":"off")
-            printf "seccomp=%s(%s) no_new_privs=%s",s,m,n}' /proc/self/status 2>/dev/null)
-        [ -n "$val" ] && printf '· %s\n' "$val"
         [ -r /proc/self/uid_map ] && \
             awk 'NR==1{f=($1==$2)} END{exit(f?0:1)}' /proc/self/uid_map 2>/dev/null && \
             printf '· uid map is identity-mapped (no namespace remap)\n'
         # [ -w ] as root sees mode bits only; container runtimes bind-mount
-        # /proc/sys read-only — trust the covering mount's ro flag first
+        # /proc/sys read-only — trust the covering mount's ro flag first.
+        # An rw /proc/sys in a container is escape-relevant regardless of uid.
         cpro=$(awk '$5=="/proc/sys/kernel/core_pattern"{l=28}
             $5=="/proc/sys" && l<10 {l=10}
             $5=="/proc" && l<6 {l=6}
@@ -761,37 +773,41 @@ sec_contain() {
             END {if (m) printf "%s", (ro ? "ro" : "rw")}' /proc/self/mountinfo 2>/dev/null)
         if [ "$cpro" = ro ]; then
             printf '· core_pattern on read-only mount (runtime-masked)\n'
-        elif [ -w /proc/sys/kernel/core_pattern ]; then
+        elif [ "$cpro" = rw ] || [ -w /proc/sys/kernel/core_pattern ]; then
             printf '!! kernel core_pattern is writable\n'
         fi
+        # / and /proc are rw in every stock container — the escape-relevant
+        # signals are a writable /sys (privileged runtime) and a hostPath
+        # root mounted at /host
         awk '{mp=$5;o=$6;sep=0;for(i=7;i<=NF;i++) if($i=="-"){sep=i;break}
             fs=sep>0?$(sep+1):"?"
-            if(mp=="/"||mp=="/host"||mp=="/proc"||mp=="/sys"){
+            if(mp=="/host"||mp=="/sys"){
                 if(o=="rw"||substr(o,1,3)=="rw,") printf "! %s mounted rw (%s)\n",mp,fs
                 else printf "· %s mounted ro (%s)\n",mp,fs}}' \
             /proc/self/mountinfo 2>/dev/null
         [ -r /var/run/secrets/kubernetes.io/serviceaccount/token ] && \
-            printf '!! orchestrator service-account token readable\n'
-        [ -e /var/lib/kubelet ] && printf '· kubelet data directory visible\n'
+            printf '!! kubernetes service-account token readable (check RBAC scope / automount)\n'
+        if [ -e /var/lib/kubelet ]; then
+            printf '· kubelet data directory visible\n'
+            [ -r /var/lib/kubelet/kubeconfig ] && \
+                printf '!! kubelet kubeconfig readable\n'
+            [ -r /var/lib/kubelet/pki/kubelet-client-current.pem ] && \
+                printf '!! kubelet client credentials readable\n'
+        fi
         printf '· runtime socket writability: see network section\n'
     else
-        if [ -r /proc/self/status ] && [ -r /etc/passwd ] && [ -r /etc/group ]; then
-            uid=$(awk '/^Uid:/{print $2;exit}' /proc/self/status 2>/dev/null)
-            user=$(awk -F: -v u="$uid" '$3==u{print $1;exit}' /etc/passwd 2>/dev/null)
-            pgid=$(awk -F: -v u="$user" '$1==u{print $4;exit}' /etc/passwd 2>/dev/null)
+        # docker/lxd group membership is root-equivalent through their
+        # daemons; root itself is excluded (already root)
+        if [ "$EUID_N" -ge 1 ] && [ -r /etc/passwd ] && [ -r /etc/group ]; then
+            up=''
+            up=$(awk -F: -v u="$EUID_N" '$3==u{print $1";"$4;exit}' /etc/passwd 2>/dev/null)
+            user=${up%%;*}; pgid=${up#*;}
             if [ -n "$user" ]; then
-                for grp in docker lxd; do
-                    gline=$(awk -F: -v g="$grp" '$1==g{print $3";"$4;exit}' /etc/group 2>/dev/null)
-                    [ -n "$gline" ] || continue
-                    gid=${gline%%;*}; members=${gline#*;}
-                    if [ "$pgid" = "$gid" ]; then
-                        printf '!! user %s has %s as primary group (root equivalent)\n' "$user" "$grp"
-                    else
-                        case ",$members," in
-                            *",$user,"*) printf '!! user %s is in %s group (root equivalent)\n' "$user" "$grp" ;;
-                        esac
-                    fi
-                done
+                awk -F: -v u="$user" -v pg="$pgid" '
+                    $1=="docker"||$1=="lxd"{
+                        if(pg==$3) printf "!! user %s has %s as primary group (root equivalent)\n",u,$1
+                        else if(index("," $4 ",", "," u ",")>0) printf "!! user %s is in %s group (root equivalent)\n",u,$1
+                    }' /etc/group 2>/dev/null
             fi
         fi
     fi
