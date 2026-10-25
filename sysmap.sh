@@ -821,13 +821,20 @@ sec_hygiene() {
     local v d m kn f ln
     printf '==[ hygiene ]==\n'
     if read -r v < /proc/sys/kernel/randomize_va_space 2>/dev/null; then
-        [ "$v" = "2" ] || printf '! kernel.randomize_va_space=%s (full ASLR off)\n' "$v"
+        case $v in
+            2) ;;
+            1) printf '! kernel.randomize_va_space=1 (partial ASLR — mmap base fixed)\n' ;;
+            *) printf '! kernel.randomize_va_space=%s (ASLR off)\n' "$v" ;;
+        esac
     fi
     if read -r v < /proc/sys/kernel/yama/ptrace_scope 2>/dev/null; then
         [ "$v" = "0" ] && printf '! kernel.yama.ptrace_scope=0 (unrestricted trace)\n'
+    elif [ -d /proc/sys/kernel ]; then
+        # no yama compiled in: ptrace is unrestricted system-wide
+        printf '· kernel.yama.ptrace_scope absent (no yama — ptrace unrestricted)\n'
     fi
     if read -r v < /proc/sys/kernel/unprivileged_bpf_disabled 2>/dev/null; then
-        [ "$v" = "0" ] && printf '· kernel.unprivileged_bpf_disabled=0\n'
+        [ "$v" = "0" ] && printf '! kernel.unprivileged_bpf_disabled=0 (unprivileged eBPF enabled)\n'
     fi
     for kn in protected_symlinks protected_hardlinks protected_regular; do
         if read -r v < "/proc/sys/fs/$kn" 2>/dev/null; then
@@ -842,7 +849,9 @@ sec_hygiene() {
         [ "$v" = "0" ] && printf '! kernel.kptr_restrict=0 (kernel pointers exposed)\n'
     fi
     if read -r v < /proc/sys/fs/suid_dumpable 2>/dev/null; then
-        [ "$v" = "0" ] || printf '! fs.suid_dumpable=%s\n' "$v"
+        # 0 = discard (safe) · 2 = dumps routed to a root-owned handler
+        # (stock systemd-coredump/abrt default) · 1 = world-readable
+        [ "$v" = "1" ] && printf '! fs.suid_dumpable=1 (suid core dumps world-readable)\n'
     fi
     if command -v getenforce >/dev/null 2>&1; then
         printf '· SELinux: %s\n' "$(getenforce 2>/dev/null)"
@@ -858,20 +867,38 @@ sec_hygiene() {
         fi
     fi
     if [ -r /etc/exports ]; then
-        grep -Ev '^[[:space:]]*(#|$)' /etc/exports 2>/dev/null | while IFS= read -r ln; do
-            case "$ln" in
-                *rw*) case "$ln" in *no_root_squash*) printf '!! NFS rw+no_root_squash: %s\n' "$ln" ;; esac ;;
-            esac
-        done
+        awk '
+            /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+            {
+                rw = 0; nrs = 0; had = 0
+                # rw must be an option token, not a path substring
+                # (/srv/rw_data *(ro,...) is a read-only export)
+                if (match($0, /\([^)]*\)/)) {
+                    had = 1
+                    opts = substr($0, RSTART+1, RLENGTH-2)
+                    n = split(opts, t, /[ \t,]+/)
+                    for (i = 1; i <= n; i++) {
+                        if (t[i] == "rw") rw = 1
+                        if (t[i] == "no_root_squash") nrs = 1
+                    }
+                }
+                # exports(5): no option list means the default (rw)
+                if (!had) rw = 1
+                if (rw && nrs) printf "!! NFS rw+no_root_squash: %s\n", $0
+            }' /etc/exports 2>/dev/null
     fi
     for d in /tmp /var/tmp; do
         [ -d "$d" ] || continue
         m=$(stat -c '%a' "$d" 2>/dev/null) || continue
-        printf '%s %s\n' "$d" "$m" | awk '{
-            ww=substr($2,length($2),1)
-            st=(length($2)==4)?substr($2,1,1):""
-            if(ww~/[2367]/ && st!~/[1357]/)
-                printf "!! world-writable dir without sticky bit: %s (mode %s)\n",$1,$2}'
+        mm=$m; st=''
+        while [ "${#mm}" -lt 3 ]; do mm="0$mm"; done
+        [ "${#mm}" -eq 4 ] && { st=${mm%???}; mm=${mm#?}; }
+        case $mm in
+            ??[2367]) case ${st:-0} in
+                          *[1357]*) ;;
+                          *) printf '!! world-writable dir without sticky bit: %s (mode %s)\n' "$d" "$m" ;;
+                      esac ;;
+        esac
     done
     if [ -d /etc ]; then
         find /etc -xdev -type f -perm -0002 2>/dev/null | while IFS= read -r f; do
@@ -879,7 +906,7 @@ sec_hygiene() {
         done
     fi
     if [ -r /etc/fstab ]; then
-        awk '$1!~/^[[:space:]]*#/ && NF>=2 {
+        awk '$1!~/^[[:space:]]*#/ && NF>=4 && $3!~/^(swap|proc|sysfs|devtmpfs|devpts|efivarfs|cgroup2?|securityfs|debugfs|tracefs|pstore|bpf|fusectl|configfs|autofs|hugetlbfs|mqueue|nsfs|binfmt_misc|rpc_pipefs)$/ {
             opts=$4; n=split(opts,a,","); ns=nx=0
             for(i=1;i<=n;i++){if(a[i]=="nosuid")ns=1;if(a[i]=="noexec")nx=1}
             printf "· fstab %s (%s)%s%s\n",$2,opts,(ns?"":" no-nosuid"),(nx?"":" no-noexec")
