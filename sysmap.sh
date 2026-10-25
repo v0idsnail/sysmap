@@ -618,7 +618,7 @@ sec_secrets() {
     if [ "$have_find" -eq 1 ]; then
         find /root /home /etc/ssh -maxdepth 3 -type f \
             \( -name 'id_*' -o -name 'identity' -o -name '*_rsa' -o -name '*_ed25519' \) \
-            ! -name '*.pub' 2>/dev/null | \
+            ! -name '*.pub' ! -name '*.pub.*' 2>/dev/null | \
         while IFS= read -r f; do
             m=''
             [ "$have_stat" -eq 1 ] && m=$(stat -c '%a' "$f" 2>/dev/null)
@@ -626,12 +626,13 @@ sec_secrets() {
             while [ "${#mm}" -lt 3 ]; do mm="0$mm"; done
             [ "${#mm}" -eq 4 ] && mm=${mm#?}
             case $mm in
-                ??[2367]|?[2367]?)
+                ??[4567]|?[4567]?)
                     printf '!! ssh private key group/world-readable (mode %s): %s\n' "${m:-?}" "$f" ;;
                 *)
                     if [ "$EUID_N" -ne 0 ]; then
                         if [ -r "$f" ]; then
-                            printf '!! ssh private key readable (mode %s): %s\n' "${m:-?}" "$f"
+                            # owner-only mode + readable by us = our own key
+                            printf '· ssh key present, readable (mode %s): %s\n' "${m:-?}" "$f"
                         else
                             printf '· ssh key present, not readable: %s\n' "$f"
                         fi
@@ -660,23 +661,56 @@ sec_secrets() {
         printf '· history (%s bytes): %s\n' "${sz:-?}" "$f"
     done
     for f in /root/.docker/config.json /home/*/.docker/config.json; do
-        [ -r "$f" ] && printf '!! registry credential store readable: %s\n' "$f"
+        [ -r "$f" ] || continue
+        # config.json legitimately exists without credentials (contexts,
+        # CLI prefs, logout leaves "auths":{}) — gate on content
+        if grep -qE '"(credsStore|credHelpers)"' "$f" 2>/dev/null || \
+           { grep -q '"auths"' "$f" 2>/dev/null && \
+             ! grep -qE '"auths"[[:space:]]*:[[:space:]]*\{[[:space:]]*\}' "$f" 2>/dev/null; }; then
+            printf '!! registry credential store with credentials: %s\n' "$f"
+        else
+            printf '· docker config present, no stored credentials: %s\n' "$f"
+        fi
     done
     for f in /root/.git-credentials /home/*/.git-credentials; do
-        [ -f "$f" ] && printf '! git credentials file: %s\n' "$f"
+        [ -f "$f" ] || continue
+        m=''
+        [ "$have_stat" -eq 1 ] && m=$(stat -c '%a' "$f" 2>/dev/null)
+        printf '! git credentials file (mode %s): %s\n' "${m:-?}" "$f"
     done
-    [ -r /var/lib/cloud/instance/user-data.txt ] && \
-        printf '!! cloud-init user-data readable: /var/lib/cloud/instance/user-data.txt\n'
-    for f in /run/cloud-init/*.json; do
-        [ -f "$f" ] && printf '· cloud-init state: %s\n' "$f"
+    # systemd credential stores (LoadCredential=/SetCredential= material)
+    for f in /etc/credstore/* /etc/credstore.encrypted/* /run/credentials/*/*; do
+        [ -f "$f" ] || continue
+        m=''
+        [ "$have_stat" -eq 1 ] && m=$(stat -c '%a' "$f" 2>/dev/null)
+        mm="$m"
+        while [ "${#mm}" -lt 3 ]; do mm="0$mm"; done
+        [ "${#mm}" -eq 4 ] && mm=${mm#?}
+        case $mm in
+            ??[4567]|?[4567]?)
+                printf '!! systemd credential group/world-readable (mode %s): %s\n' "${m:-?}" "$f" ;;
+            *)  printf '! systemd credential present (mode %s): %s\n' "${m:-?}" "$f" ;;
+        esac
     done
-    if [ "$have_grep" -eq 1 ]; then
-        for f in /etc/fstab /etc/yum.conf /etc/apt/apt.conf.d/* /etc/yum.repos.d/*; do
-            [ -f "$f" ] || continue
-            grep -Ein 'password|pass=|user:.*@' "$f" 2>/dev/null | \
-                while IFS= read -r ln; do printf '! credential indicator %s: %s\n' "$f" "$ln"; done
-        done
+    for f in /root/.netrc /home/*/.netrc /root/.aws/credentials /home/*/.aws/credentials \
+             /root/.kube/config /home/*/.kube/config \
+             /root/.config/containers/auth.json /home/*/.config/containers/auth.json; do
+        [ -f "$f" ] && printf '! credential file present: %s\n' "$f"
+    done
+    if [ -r /var/lib/cloud/instance/user-data.txt ]; then
+        if grep -qiE 'password|passwd|secret|token|api_?key|private_?key' \
+                /var/lib/cloud/instance/user-data.txt 2>/dev/null; then
+            printf '!! cloud-init user-data readable, possible secrets: /var/lib/cloud/instance/user-data.txt\n'
+        else
+            printf '· cloud-init user-data readable, no obvious secrets: /var/lib/cloud/instance/user-data.txt\n'
+        fi
     fi
+    cfiles=''
+    for f in /etc/fstab /etc/yum.conf /etc/apt/apt.conf.d/* /etc/yum.repos.d/*; do
+        [ -f "$f" ] && cfiles="$cfiles $f"
+    done
+    [ -n "$cfiles" ] && grep -EinH 'password|pass=|user:.*@' $cfiles 2>/dev/null | \
+        while IFS= read -r ln; do printf '! credential indicator %s\n' "$ln"; done
     for f in /var/backups/*; do
         [ -e "$f" ] && printf '· /var/backups: %s\n' "$f"
     done
