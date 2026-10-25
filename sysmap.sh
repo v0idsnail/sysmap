@@ -63,7 +63,7 @@ EUID_N=$(id -u 2>/dev/null) || EUID_N=-1
 # 1. posture — OS, kernel, init, virtualisation, container, defensive tooling
 # ---------------------------------------------------------------------------
 sec_posture() {
-    local os init virt ct m se pslist def t
+    local os init virt ct m se pslist def t kv
     os=''; init=''; virt=''; ct=''; m=''; se=''; pslist=''; def=''
     printf '==[ posture ]==\n'
     if [ -r /etc/os-release ]; then
@@ -74,7 +74,8 @@ sec_posture() {
     [ -z "$os" ] && [ -r /etc/alpine-release ]  && os="Alpine $(cat /etc/alpine-release 2>/dev/null)"
     [ -z "$os" ] && [ -r /etc/debian_version ]  && os="Debian $(cat /etc/debian_version 2>/dev/null)"
     [ -n "$os" ] && printf '· os: %s\n' "$os"
-    printf '· kernel: %s (%s)\n' "$(uname -sr 2>/dev/null)" "$(uname -m 2>/dev/null)"
+    kv=$(uname -srm 2>/dev/null)
+    [ -n "$kv" ] && printf '· kernel: %s (%s)\n' "${kv% *}" "${kv##* }"
     if [ -d /run/systemd/system ]; then
         init="systemd"
     elif [ -r /proc/1/comm ]; then
@@ -142,7 +143,7 @@ sec_posture() {
         printf '· selinux: %s\n' "${se:-mounted, mode unknown}"
     fi
     if [ -d /sys/module/apparmor ] && [ -r /proc/self/attr/current ]; then
-        m=$(cat /proc/self/attr/current 2>/dev/null) || m=""
+        read -r m < /proc/self/attr/current 2>/dev/null || :
         [ -n "$m" ] && printf '· apparmor: %s\n' "$m"
     fi
     if [ ! -d /sys/fs/selinux ] && [ ! -d /sys/module/apparmor ]; then
@@ -423,7 +424,7 @@ _ssstat() {
     _ssline "$(stat -c '%a %u %g %G %n' "$1" 2>/dev/null)" "$2"
 }
 sec_sched() {
-    local p f sl sls cands scripts SCT c t ln
+    local p f sl sls cands scripts SCT c t ln p1
     printf '==[ scheduled-work ]==\n'
     if ! command -v stat >/dev/null 2>&1; then
         printf '· stat unavailable — scheduled-work module skipped\n'
@@ -495,7 +496,9 @@ EOF
                 while IFS= read -r ln; do printf '! wildcard in script: %s\n' "$ln"; done
         fi
     )
-    if [ -d /run/systemd/system ] && grep -q systemd /proc/1/comm 2>/dev/null; then
+    p1=''
+    read -r p1 < /proc/1/comm 2>/dev/null || :
+    if [ -d /run/systemd/system ] && [ "$p1" = systemd ]; then
         SCT=''
         for c in "$(command -v systemctl 2>/dev/null)" /usr/sbin/systemctl /sbin/systemctl; do
             [ -n "$c" ] && [ -x "$c" ] && { SCT=$c; break; }
