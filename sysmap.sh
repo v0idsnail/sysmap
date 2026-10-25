@@ -392,6 +392,15 @@ _ssline() {
     while [ "${#m}" -lt 3 ]; do m="0$m"; done
     [ "${#m}" -eq 4 ] && m=${m#?}
     case $m in ?[2367]?|??[2367]) w=1 ;; esac
+    # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools via
+    # group 'crontab' (1730/1770, sticky) — covers the spool DIRECTORIES
+    # themselves (probed with y) and any file using the same mechanism.
+    # Checked before the per-user spool case below, which also matches
+    # the directory paths.
+    if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && [ "$gn" = "crontab" ]; then
+        [ "$flag" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
+        return 0
+    fi
     case "$path" in
         /var/spool/cron/*|/var/spool/at/*|/etc/crontabs/*)
             # per-user spool files (cron and at): crond/atd executes the
@@ -409,13 +418,7 @@ _ssline() {
     if [ "$u" != "0" ]; then
         printf '!! %s (non-root-owned)\n' "$line"
     elif [ "$w" -eq 1 ]; then
-        if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && [ "$gn" = "crontab" ]; then
-            # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools
-            # via group 'crontab' (1730/1770, sticky). Not a finding.
-            [ "$flag" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
-        else
-            printf '!! %s (group/world-writable)\n' "$line"
-        fi
+        printf '!! %s (group/world-writable)\n' "$line"
     elif [ "$flag" = "y" ]; then
         printf '· %s\n' "$line"
     fi
@@ -945,15 +948,18 @@ sec_hygiene() {
             {
                 rw = 0; nrs = 0; had = 0
                 # rw must be an option token, not a path substring
-                # (/srv/rw_data *(ro,...) is a read-only export)
-                if (match($0, /\([^)]*\)/)) {
+                # (/srv/rw_data *(ro,...) is a read-only export) — and
+                # every client option group counts, not just the first
+                s = $0
+                while (match(s, /\([^)]*\)/)) {
                     had = 1
-                    opts = substr($0, RSTART+1, RLENGTH-2)
+                    opts = substr(s, RSTART+1, RLENGTH-2)
                     n = split(opts, t, /[ \t,]+/)
                     for (i = 1; i <= n; i++) {
                         if (t[i] == "rw") rw = 1
                         if (t[i] == "no_root_squash") nrs = 1
                     }
+                    s = substr(s, RSTART+RLENGTH)
                 }
                 # exports(5): no option list means the default (rw)
                 if (!had) rw = 1
