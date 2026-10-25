@@ -109,10 +109,22 @@ sec_posture() {
         pslist=$(ps aux 2>/dev/null) || pslist=""
     fi
     if [ -n "$pslist" ]; then
-        for t in falcon-sensor mdatp sentinel_agent osqueryd wazuh clamd; do
-            printf '%s\n' "$pslist" | grep -qi "$t" 2>/dev/null && def="${def:+$def }$t"
-        done
-        printf '%s\n' "$pslist" | grep -q '[ /]auditd' 2>/dev/null && def="${def:+$def }auditd"
+        # anchored matching: a path like /var/ossec/logs must not register
+        # as a running agent — names match at process-name boundaries
+        def=$(printf '%s\n' "$pslist" | awk '
+            BEGIN {
+                n = split("falcon-sensor mdatp sentinel_agent osqueryd wazuh clamd auditd", a, " ")
+                for (i = 1; i <= n; i++) hot[a[i]] = 1
+            }
+            {
+                for (i = 1; i <= n; i++)
+                    if (tolower($0) ~ ("(^|[ /])" a[i] "([: /-]|$)"))
+                        s[a[i]] = 1
+            }
+            END {
+                for (i = 1; i <= n; i++) if (s[a[i]]) u = u (u ? " " : "") a[i]
+                print u
+            }')
         if [ -n "$def" ]; then
             printf '· defensive agents running: %s\n' "$def"
         else
@@ -152,6 +164,9 @@ sec_identity() {
         cur_grps=$(id -Gn 2>/dev/null | tr ',' ' ')
     fi
     myuid=$(awk -F: -v u="$cur_user" '$1==u{print $3; exit}' /etc/passwd 2>/dev/null)
+    # NSS-backed hosts (SSSD/FreeIPA) and `docker run -u <uid>` have no
+    # passwd entry for the current user — fall back to the real uid
+    [ -n "$myuid" ] || case $EUID_N in ''|-1) ;; *) myuid=$EUID_N ;; esac
     if [ "$myuid" = "0" ]; then
         printf '· running as uid 0 (%s)\n' "${cur_user:-unknown}"
     elif [ -n "$cur_user" ]; then
@@ -160,23 +175,25 @@ sec_identity() {
     fi
     [ "$myuid" = "0" ] || for g in $cur_grps; do
         case $g in
-            shadow|disk)          printf '!! in the %s group\n' "$g" ;;
-            wheel|sudo|docker|lxd) printf '! in the %s group\n' "$g" ;;
+            shadow|disk|docker|lxd) printf '!! in the %s group\n' "$g" ;;
+            wheel|sudo)             printf '! in the %s group\n' "$g" ;;
         esac
     done
-    extra0=$(awk -F: '$3=="0"&&$1!="root"{print $1}' /etc/passwd 2>/dev/null)
-    [ -n "$extra0" ] && printf '!! uid 0 besides root: %s\n' \
-        "$(printf '%s\n' "$extra0" | awk '{printf "%s%s",(n++?" ":""),$0}')"
-    awk -F: '$3>0&&$3<1000&&$7~/(sh|fish)$/{print $1,$3,$7}' /etc/passwd 2>/dev/null | \
-        while read -r n u s; do printf '! system account %s (uid %s) shell %s\n' "$n" "$u" "$s"; done
-    if command -v stat >/dev/null 2>&1; then
-        awk -F: '$3>=1000&&$6!=""&&$6!="/"{print $3,$6}' /etc/passwd 2>/dev/null | \
-            while read -r hu hp; do
-                ou=$(stat -c '%u' "$hp" 2>/dev/null)
-                [ -n "$ou" ] && [ "$ou" != "$hu" ] && \
-                    printf '! home %s owned by uid %s (account uid %s)\n' "$hp" "$ou" "$hu"
-            done
-    fi
+    extra0=$(awk -F: '$3=="0"&&$1!="root"{printf "%s%s",(n++?" ":""),$1}' /etc/passwd 2>/dev/null)
+    [ -n "$extra0" ] && printf '!! uid 0 besides root: %s\n' "$extra0"
+    awk -F: '$3>0&&$3<65534{
+        if ($3<1000 && $7~/(sh|fish)$/) print "sys|" $1 "|" $3 "|" $7
+        else if ($3>=1000 && $6!="" && $6!="/") print "home|" $3 "|" $6
+    }' /etc/passwd 2>/dev/null | \
+    while IFS='|' read -r tag a b c; do
+        if [ "$tag" = sys ]; then
+            printf '! system account %s (uid %s) shell %s\n' "$a" "$b" "$c"
+        elif command -v stat >/dev/null 2>&1; then
+            ou=$(stat -c '%u' "$b" 2>/dev/null)
+            [ -n "$ou" ] && [ "$ou" != "$a" ] && \
+                printf '! home %s owned by uid %s (account uid %s)\n' "$b" "$ou" "$a"
+        fi
+    done
     awk -F: 'BEGIN{ng=split("wheel sudo docker lxd disk shadow adm staff video backup operator lp mail",a)}
         $4!=""{for(i=1;i<=ng;i++) if($1==a[i]){
           c=split($4,t,","); m=""
@@ -184,8 +201,8 @@ sec_identity() {
           if(m!="") print $1, m}}' /etc/group 2>/dev/null | \
         while read -r gn gm; do
             case $gn in
-                shadow|disk)           m='!! ' ;;
-                wheel|sudo|docker|lxd) m='!  ' ;;
+                shadow|disk|docker|lxd) m='!! ' ;;
+                wheel|sudo)             m='!  ' ;;
                 *)                     m='·  ' ;;
             esac
             printf '%sgroup %s members: %s\n' "$m" "$gn" "$gm"
@@ -218,7 +235,7 @@ sec_identity() {
                 n++; if(!s[$1]++){u=u (u?" ":"") $1}} END{if(n)print n, u}')
         [ -n "$wsum" ] && printf '· active sessions: %s\n' "$wsum"
     fi
-    socks=$(ls -1 /run/screen/S-* /var/run/screen/S-* /tmp/tmux-*/* 2>/dev/null || :)
+    socks=$(ls -1 /run/screen/S-* /tmp/tmux-*/* 2>/dev/null || :)
     [ -n "$socks" ] && { printf '! live multiplexer session sockets:\n'
         printf '%s\n' "$socks" | while read -r l; do printf '· %s\n' "$l"; done; }
     return 0
@@ -228,7 +245,7 @@ sec_identity() {
 # 3. execsurf — SUID/SGID, capabilities, PATH, ld.so
 # ---------------------------------------------------------------------------
 sec_execsurf() {
-    local d p gc rest seen have_fa m
+    local d p gc rest seen have_fa m mnts mnt u
     printf '==[ execution-surfaces ]==\n'
     have_fa=""
     if command -v find >/dev/null 2>&1 && command -v awk >/dev/null 2>&1; then
@@ -236,12 +253,47 @@ sec_execsurf() {
     else
         printf '· find or awk unavailable, permission-based scans skipped\n'
     fi
+    mnts="/"
     if [ "$have_fa" ]; then
-        find / -xdev -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null | awk '
+        # real filesystems only (kernel-interface and nosuid mounts skipped);
+        # one -xdev walk per mount covers separately-mounted /usr, /opt, /var
+        # that a single `find / -xdev` never sees
+        mnts=$(awk '
+            {
+                sep = 0
+                for (i = 1; i <= NF; i++) if ($i == "-") { sep = i; break }
+                if (sep == 0) next
+                fst = $(sep+1); mp = $5; opt = $6
+                if (fst ~ /^(proc|sysfs|tmpfs|devtmpfs|devpts|cgroup2?|securityfs|debugfs|tracefs|pstore|bpf|efivarfs|fusectl|configfs|autofs|hugetlbfs|mqueue|nsfs|binfmt_misc|rpc_pipefs)$/) next
+                if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\.sshfs|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/) next
+                if (mp ~ /^\/(proc|sys|dev)(\/|$)/) next
+                if (opt ~ /(^|,)nosuid(,|$)/) next
+                if (!seen[mp]++) print mp
+            }' /proc/self/mountinfo 2>/dev/null)
+        # network filesystems are noted, never walked: the sweep would be
+        # remote I/O against the server (slow, racy) — client-side suid on
+        # an nfs mount is a real vector, so it is surfaced as a note
+        awk '{
+            sep = 0
+            for (i = 1; i <= NF; i++) if ($i == "-") { sep = i; break }
+            if (sep == 0) next
+            fst = $(sep+1); mp = $5
+            if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\.sshfs|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/ && !n[mp]++)
+                printf "· network mount present, not walked (audit server-side / mount opts): %s (%s)\n", mp, fst
+        }' /proc/self/mountinfo 2>/dev/null
+        [ -n "$mnts" ] || mnts="/"
+        {
+            while IFS= read -r mnt; do
+                find "$mnt" -xdev -type f \( -perm -4000 -o -perm -2000 \) 2>/dev/null
+            done <<MNTS
+$mnts
+MNTS
+        } | awk '
             BEGIN {
                 n = split("awk python python3 perl php ruby node lua less more man \
-vi vim vim.tiny find env cp mv tar gzip tee nmap nc socat gdb docker \
-kubectl ssh wget curl base64 xxd", k, " ")
+vi vim vim.tiny vim.basic nvim gvim find env cp mv tar gzip tee nmap nc \
+ncat nc.openbsd nc.traditional busybox socat gdb docker kubectl ssh wget \
+curl base64 xxd", k, " ")
                 for (i = 1; i <= n; i++) hot[k[i]] = 1
             }
             {
@@ -259,34 +311,51 @@ kubectl ssh wget curl base64 xxd", k, " ")
         done
     fi
     if [ -n "$gc" ] && [ "$have_fa" ]; then
-        "$gc" -r / 2>/dev/null | awk '
+        {
+            while IFS= read -r mnt; do
+                "$gc" -r "$mnt" 2>/dev/null
+            done <<MNTS
+$mnts
+MNTS
+        } | awk '
             /^\/\.snapshots\// { next }   # snapper btrfs snapshots: same files, skip dupes
+            /^\/usr\/bin\/new(uid|gid)map / { printf "· %s — stock shadow-utils subuid helper\n", $0; next }
             /cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_dac_override|cap_dac_read_search|cap_sys_module/ {
                 printf "!! %s — broad capability grant\n", $0; next }
-            /cap_net_raw/ { printf "! %s (baseline, e.g. ping)\n", $0; next }
+            /cap_net_raw/ { printf "· %s (baseline, e.g. ping)\n", $0; next }
+            /cap_net_bind_service|cap_ipc_lock|cap_sys_nice|cap_kill/ { printf "· %s (common on stock distros)\n", $0; next }
             { printf "! %s\n", $0 }'
     elif [ -z "$gc" ]; then
         printf '· getcap not found, capability scan skipped\n'
     fi
-    seen=" "
+    # collect deduped existing PATH dirs, then one batched stat
+    seen=" "; set --
     rest="$PATH:"
     while [ -n "$rest" ]; do
         d=${rest%%:*}; rest=${rest#*:}
         [ -z "$d" ] && d=.
         case "$seen" in *" $d "*) continue ;; esac
         seen="$seen$d "
-        if [ -d "$d" ]; then
-            if [ "$EUID_N" -eq 0 ]; then
-                # root: [ -w ] is always true; judge by group/world write bits instead
-                m=$(stat -c '%a' "$d" 2>/dev/null)
+        [ -d "$d" ] && set -- "$@" "$d"
+    done
+    if [ "$#" -gt 0 ]; then
+        if [ "$EUID_N" -eq 0 ]; then
+            # root: [ -w ] is always true — judge by mode bits and owner
+            stat -c '%a|%u|%n' "$@" 2>/dev/null | while IFS='|' read -r mo u d; do
+                m=$mo
                 while [ "${#m}" -lt 3 ]; do m="0$m"; done
                 [ "${#m}" -eq 4 ] && m=${m#?}
-                case $m in ?[2367]?|??[2367]) printf '!! group/world-writable dir in PATH: %s\n' "$d" ;; esac
-            elif [ -w "$d" ]; then
-                printf '!! writable directory in PATH: %s\n' "$d"
-            fi
+                case $m in
+                    ?[2367]?|??[2367]) printf '!! group/world-writable dir in PATH: %s\n' "$d" ;;
+                    [2367]??) [ "$u" != "0" ] && printf '! PATH dir writable by uid %s: %s\n' "$u" "$d" ;;
+                esac
+            done
+        else
+            for d in "$@"; do
+                [ -w "$d" ] && printf '!! writable directory in PATH: %s\n' "$d"
+            done
         fi
-    done
+    fi
     if [ -f /etc/ld.so.preload ] && [ "$have_fa" ]; then
         if [ -r /etc/ld.so.preload ]; then
             awk '!/^[[:space:]]*(#|$)/ { printf "! /etc/ld.so.preload entry: %s\n", $0 }' \
