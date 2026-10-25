@@ -47,6 +47,10 @@ only `!!` and `!` findings). If you gate CI on exit codes, re-baseline
   `! /proc mounted rw`; the escape-relevant signals are `/sys` and
   `/host` rw. An rw `/proc/sys` (core_pattern) is now reported even when
   the survey runs non-root.
+- identity: the privilege-group member listing (`group wheel members: …`)
+  was inert since 1.0.0 — the awk split() used the passwd field
+  separator ':' instead of a space, so no group ever matched. It prints
+  again.
 - execsurf: stock shadow-utils newuidmap/newgidmap demoted from `!!`
   (exact-path match — planted copies still flag); cap_net_raw and common
   distro caps to `·`.
@@ -58,9 +62,13 @@ only `!!` and `!` findings). If you gate CI on exit codes, re-baseline
 
 ### Added
 - execsurf: SUID/SGID and capability scans enumerate real filesystems
-  from /proc/self/mountinfo (per-mount `-xdev` walks) — separately
   mounted /usr, /opt, /var were invisible to the single-root walk.
-  Network filesystems are noted, never walked.
+  Capability reads are find-bounded and batched: `getcap -r` recurses
+  via nftw without FTW_MOUNT, crossing into every nested and network
+  mount (duplicate findings, remote I/O). Network filesystems are
+  noted, never walked; container-image and snap runtime mounts
+  (overlay/squashfs/erofs below /) are skipped; mount points with
+  spaces (mountinfo \040 escapes) are decoded.
 - sched: at-job spools probed (`/var/spool/cron/atjobs`, `/var/spool/at`).
 - contain: k8s pods with a private cgroup namespace (cgroup v2) are
   detected via pid-1 environment; cap_dac_read_search decoded; readable

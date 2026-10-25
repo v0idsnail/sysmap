@@ -195,7 +195,7 @@ sec_identity() {
                 printf '! home %s owned by uid %s (account uid %s)\n' "$b" "$ou" "$a"
         fi
     done
-    awk -F: 'BEGIN{ng=split("wheel sudo docker lxd disk shadow adm staff video backup operator lp mail",a)}
+    awk -F: 'BEGIN{ng=split("wheel sudo docker lxd disk shadow adm staff video backup operator lp mail",a," ")}
         $4!=""{for(i=1;i<=ng;i++) if($1==a[i]){
           c=split($4,t,","); m=""
           for(j=1;j<=c;j++) if(t[j]!="root") m=m (m?",":"") t[j]
@@ -269,6 +269,16 @@ sec_execsurf() {
                 if (fst ~ /^(nfs|nfs4|cifs|smbfs|sshfs|fuse\..*|glusterfs|ceph|9p|beegfs|lustre|vboxsf|vmhgfs|prl_fs)$/) next
                 if (mp ~ /^\/(proc|sys|dev)(\/|$)/) next
                 if (opt ~ /(^|,)nosuid(,|$)/) next
+                # container image / snap runtime mounts are not host surfaces
+                # (only "/" itself is — that is our own root inside one)
+                if (mp != "/" && fst ~ /^(overlay|squashfs|erofs)$/) next
+                # mountinfo octal-escapes spaces and tabs in mount points
+                while (match(mp, /\\[0-9][0-9][0-9]/)) {
+                    d = substr(mp, RSTART+1, 3)
+                    mp = substr(mp, 1, RSTART-1) \
+                        sprintf("%c", substr(d,1,1)*64 + substr(d,2,1)*8 + substr(d,3,1)) \
+                        substr(mp, RSTART+4)
+                }
                 if (!seen[mp]++) print mp
             }' /proc/self/mountinfo 2>/dev/null)
         # network/fuse filesystems are noted, never walked: the sweep would
@@ -310,11 +320,17 @@ curl base64 xxd", k, " ")
         done
     fi
     if [ -n "$gc" ] && [ "$have_fa" ]; then
+        # find -xdev bounds the walk: getcap -r uses nftw without
+        # FTW_MOUNT and crosses into every nested and network mount
+        # (duplicate findings, remote I/O). getcap on find's batches
+        # reads the same xattrs, mount-contained.
         printf '%s\n' "$mnts" | while IFS= read -r mnt; do
-            "$gc" -r "$mnt" 2>/dev/null
+            find "$mnt" -xdev -type f -exec "$gc" {} + 2>/dev/null
         done | awk '
+            { if (dup[$1]++) next }
             /^\/\.snapshots\// { next }   # snapper btrfs snapshots: same files, skip dupes
-            /^\/usr\/bin\/new(uid|gid)map / { printf "· %s — stock shadow-utils subuid helper\n", $0; next }
+            /^\/usr\/bin\/newuidmap cap_setuid=ep$/ || /^\/usr\/bin\/newgidmap cap_setgid=ep$/ {
+                printf "· %s — stock shadow-utils subuid helper\n", $0; next }
             /cap_setuid|cap_setgid|cap_sys_admin|cap_sys_ptrace|cap_dac_override|cap_dac_read_search|cap_sys_module/ {
                 printf "!! %s — broad capability grant\n", $0; next }
             /cap_net_raw/ { printf "· %s (baseline, e.g. ping)\n", $0; next }
@@ -373,25 +389,32 @@ curl base64 xxd", k, " ")
 # ---------------------------------------------------------------------------
 # 4. sched — cron, timers, service units, rc.local
 # ---------------------------------------------------------------------------
-# classify one line of `stat -c '%a %u %g %G %n'` output
+# classify one line of `stat -c '%a %u %g %n'` output
 _ssline() {
-    # $1 = stat line · $2 = y|n (y = also report clean entries)
+    # $1 = stat line · $2 = y|n (y = also report clean entries).
+    # Parsed with parameter expansion, not word-splitting: group names are
+    # not in the line, and paths may contain spaces.
     [ -n "$1" ] || return 0
     local flag=$2
-    set -f
-    set -- $1
-    set +f
-    local mo=$1 u=$2 gn=$4 path=$5 m=$1 line w=0
-    line="$1 $2 $3 $5"
+    local line=$1
+    local mo=${line%% *}
+    local r=${line#* }
+    local u=${r%% *}
+    local r2=${r#* }
+    local path=${r2#* }
+    local m=$mo
+    local w=0
     while [ "${#m}" -lt 3 ]; do m="0$m"; done
     [ "${#m}" -eq 4 ] && m=${m#?}
     case $m in ?[2367]?|??[2367]) w=1 ;; esac
     # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools via
     # group 'crontab' (1730/1770, sticky) — covers the spool DIRECTORIES
     # themselves (probed with y) and any file using the same mechanism.
-    # Checked before the per-user spool case below, which also matches
-    # the directory paths.
-    if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && [ "$gn" = "crontab" ]; then
+    # The group name is stat'ed lazily: only writable root-owned paths
+    # reach this branch. Checked before the per-user spool case below,
+    # which also matches the directory paths.
+    if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && \
+       [ "$(stat -c '%G' "$path" 2>/dev/null)" = "crontab" ]; then
         [ "$flag" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
         return 0
     fi
@@ -419,7 +442,7 @@ _ssline() {
 }
 _ssstat() {
     # $1=path $2=y|n — single-path convenience wrapper
-    _ssline "$(stat -c '%a %u %g %G %n' "$1" 2>/dev/null)" "$2"
+    _ssline "$(stat -c '%a %u %g %n' "$1" 2>/dev/null)" "$2"
 }
 sec_sched() {
     local p f sl sls res cands scripts SCT c t ln p1
@@ -438,7 +461,7 @@ sec_sched() {
         if [ -f "$p" ]; then
             cands="$cands $p"
         elif [ -d "$p" ]; then
-            sls=$(find "$p" -maxdepth 2 -type f -exec stat -c '%a %u %g %G %n' {} + 2>/dev/null)
+            sls=$(find "$p" -maxdepth 2 -type f -exec stat -c '%a %u %g %n' {} + 2>/dev/null)
             # pipe-fed (heredocs materialize temp files on bash 5.0); the
             # subshell emits @F markers so cands/scripts still accumulate
             res=$(printf '%s\n' "$sls" | while IFS= read -r sl; do
@@ -451,8 +474,8 @@ sec_sched() {
             [ -n "$res" ] || continue
             case "$p" in
                 /etc/cron.hourly|/etc/cron.daily|/etc/cron.weekly|/etc/cron.monthly|/etc/periodic)
-                    scripts="$scripts$(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
-                *)  cands="$cands$(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
+                    scripts="$scripts $(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
+                *)  cands="$cands $(printf '%s\n' "$res" | sed -n 's/^@F //p' | tr '\n' ' ')" ;;
             esac
             printf '%s\n' "$res" | grep -v '^@F '
         fi
@@ -510,7 +533,7 @@ sec_sched() {
             "$SCT" list-units --type=service --state=running --no-legend --no-pager 2>/dev/null | \
                 awk '{print "· svc " $1}'
             [ -d /etc/systemd/system ] && \
-                find /etc/systemd/system -type f -exec stat -c '%a %u %g %G %n' {} + 2>/dev/null | \
+                find /etc/systemd/system -type f -exec stat -c '%a %u %g %n' {} + 2>/dev/null | \
                 while IFS= read -r sl; do _ssline "$sl" n; done
         else
             printf '· systemd present but systemctl not executable — unit checks skipped\n'
@@ -821,11 +844,11 @@ sec_contain() {
                 if(int(d0/4)%2) print "cap dac_read_search"
                 if(int(d4/8)%2) print "cap sys_ptrace"
                 if(int(d5/2)%2) print "cap sys_admin"}
-            /^Seccomp:/{s=$2} /^NoNewPrivs:/{nn=$2}
+            /^Seccomp:/{sc=$2} /^NoNewPrivs:/{nn=$2}
             END{
-                if(s!=""||nn!=""){
-                    m=s==2?"filter":(s==1?"strict":"off")
-                    printf "info seccomp=%s(%s) no_new_privs=%s\n",s,m,nn}}' \
+                if(sc!=""||nn!=""){
+                    m=sc==2?"filter":(sc==1?"strict":"off")
+                    printf "info seccomp=%s(%s) no_new_privs=%s\n",sc,m,nn}}' \
             /proc/self/status 2>/dev/null | \
         while IFS= read -r c; do
             case "$c" in
@@ -1129,14 +1152,23 @@ SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
         }
         return out
     }
-    function esc(s) {
+    function esc(s,  BS, i, n, t, out) {
+        # character-wise: gsub replacements carrying a literal backslash
+        # before a non-\ non-& char are dropped by busybox awk <= 1.37,
+        # turning the quote/tab/CR escapes into no-ops
         s = u8clean(s)
-        gsub(/\\/, "&&", s)
-        gsub(/"/, "\\\"", s)
-        gsub(/\t/, "\\t", s)
-        gsub(/\r/, "\\r", s)
-        gsub(/[\001-\037]/, "", s)
-        return s
+        BS = sprintf("%c", 92)
+        out = ""; n = length(s)
+        for (i = 1; i <= n; i++) {
+            t = substr(s, i, 1)
+            if (t == "\\") out = out BS BS
+            else if (t == "\"") out = out BS "\""
+            else if (t == "\t") out = out BS "t"
+            else if (t == "\r") out = out BS "r"
+            else out = out t
+        }
+        gsub(/[\001-\037]/, "", out)
+        return out
     }
     /^\001rc=/ {
         sent++
