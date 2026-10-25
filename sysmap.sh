@@ -396,30 +396,16 @@ sec_sched() {
 # ---------------------------------------------------------------------------
 # 5. netsurf — listening sockets, runtime sockets, resolvers, gateway
 # ---------------------------------------------------------------------------
-_hex_ip4() {
-    # 8-char little-endian hex (e.g. 0503000A) → dotted-decimal (10.0.3.5)
-    # Input validated: exactly 8 hex chars, or silently returns nothing.
-    local h="$1" h2 h3 a b c d
-    case "$h" in
-        ????????) case "$h" in *[!0-9a-fA-F]*) return 0 ;; esac ;;
-        *) return 0 ;;
-    esac
-    a=$(( 0x${h#??????} ))          # chars 7-8 = MSB = 1st octet
-    d=$(( 0x${h%??????} ))          # chars 1-2 = LSB = 4th octet
-    h2=${h#??}; c=$(( 0x${h2%????} ))   # chars 3-4 = 3rd octet
-    h3=${h2#??}; b=$(( 0x${h3%??} ))    # chars 5-6 = 2nd octet
-    printf '%d.%d.%d.%d' "$a" "$b" "$c" "$d"
-}
 _classify_addr() {
     # $1=addr  $2=port  $3=proto  $4=note(optional)
-    local sev lbl
+    local sev
     case "$1" in
         0.0.0.0|::|'*'|'::ffff:0.0.0.0')
-            sev='!! '; lbl="all-interfaces" ;;
+            sev='!! ' ;;
         127.*|::1|'::ffff:127.'*)
-            sev='·  '; lbl="loopback" ;;
+            sev='·  ' ;;
         *)
-            sev='!  '; lbl="specific-addr" ;;
+            sev='!  ' ;;
     esac
     printf '%s%s %s:%s%s\n' "$sev" "$3" "$1" "$2" "${4:+ ($4)}"
 }
@@ -624,7 +610,7 @@ sec_secrets() {
 # 7. contain — container / Docker/Kubernetes posture
 # ---------------------------------------------------------------------------
 sec_contain() {
-    local in_ct cmark c val uid user pgid grp gline gid members
+    local in_ct cmark c val uid user pgid grp gline gid members cpro
     in_ct=0; cmark=""
     [ -f /.dockerenv ]        && in_ct=1 && cmark="docker env marker"
     [ -f /run/.containerenv ] && in_ct=1 && cmark="podman env marker"
