@@ -309,68 +309,122 @@ kubectl ssh wget curl base64 xxd", k, " ")
 # ---------------------------------------------------------------------------
 # 4. sched — cron, timers, service units, rc.local
 # ---------------------------------------------------------------------------
-_ssstat() {
-    # $1=path  $2=y|n  (y = report clean entries)
-    local s m mo r u w gn
-    s=$(stat -c '%a %u %g %n' "$1" 2>/dev/null) || return 0
-    m=${s%% *}; r=${s#* }; u=${r%% *}; mo=$m
+# classify one line of `stat -c '%a %u %g %G %n'` output
+_ssline() {
+    # $1 = stat line · $2 = y|n (y = also report clean entries)
+    [ -n "$1" ] || return 0
+    set -f
+    set -- $1 "$2"
+    set +f
+    local mo=$1 u=$2 gn=$4 path=$5 m=$1 line w=0
+    line="$1 $2 $3 $5"
     while [ "${#m}" -lt 3 ]; do m="0$m"; done
     [ "${#m}" -eq 4 ] && m=${m#?}
-    w=0; case $m in ?[2367]?|??[2367]) w=1 ;; esac
+    case $m in ?[2367]?|??[2367]) w=1 ;; esac
+    case "$path" in
+        /var/spool/cron/*|/var/spool/at/*|/etc/crontabs/*)
+            # per-user spool files (cron and at): crond/atd executes the
+            # job as the owning user, so user ownership is the stock
+            # mechanism, not a finding. Only write bits are privesc-relevant.
+            if [ "$w" -eq 1 ]; then
+                if [ "$u" = "0" ]; then
+                    printf '!! %s (group/world-writable)\n' "$line"
+                else
+                    printf '! %s (group/world-writable, executes as uid %s)\n' "$line" "$u"
+                fi
+            fi
+            return 0 ;;
+    esac
     if [ "$u" != "0" ]; then
-        printf '!! %s (non-root-owned)\n' "$s"
+        printf '!! %s (non-root-owned)\n' "$line"
     elif [ "$w" -eq 1 ]; then
-        gn=$(stat -c '%G' "$1" 2>/dev/null)
-        if [ "$mo" = 1730 ] && [ "$gn" = crontab ]; then
-            # stock Debian/Ubuntu: setgid crontab(1) writes user spools via
-            # group 'crontab'; sticky + no world bits. Not a finding.
-            [ "$2" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$s"
+        if { [ "$mo" = "1730" ] || [ "$mo" = "1770" ]; } && [ "$gn" = "crontab" ]; then
+            # stock Debian/Ubuntu: setgid crontab(1)/at(1) write user spools
+            # via group 'crontab' (1730/1770, sticky). Not a finding.
+            [ "$2" = y ] && printf '· %s (debian crontab(1) spool mechanism)\n' "$line"
         else
-            printf '!! %s (group/world-writable)\n' "$s"
+            printf '!! %s (group/world-writable)\n' "$line"
         fi
     elif [ "$2" = "y" ]; then
-        printf '· %s\n' "$s"
+        printf '· %s\n' "$line"
     fi
 }
+_ssstat() {
+    # $1=path $2=y|n — single-path convenience wrapper
+    _ssline "$(stat -c '%a %u %g %G %n' "$1" 2>/dev/null)" "$2"
+}
 sec_sched() {
-    local p f cands SCT c ln t w
+    local p f sl sls cands scripts SCT c t ln
     printf '==[ scheduled-work ]==\n'
     if ! command -v stat >/dev/null 2>&1; then
         printf '· stat unavailable — scheduled-work module skipped\n'
         return 0
     fi
-    cands=''
+    cands=''; scripts=''
     for p in /etc/crontab /etc/cron.d /etc/cron.hourly /etc/cron.daily \
               /etc/cron.weekly /etc/cron.monthly /var/spool/cron/crontabs \
-              /var/spool/cron /etc/crontabs /etc/periodic /etc/anacrontab; do
+              /var/spool/cron /var/spool/cron/atjobs /var/spool/at \
+              /etc/crontabs /etc/periodic /etc/anacrontab; do
         [ -e "$p" ] || continue; [ -L "$p" ] && continue
         _ssstat "$p" y
         if [ -f "$p" ]; then
             cands="$cands $p"
         elif [ -d "$p" ]; then
-            for f in $(find "$p" -maxdepth 2 -type f 2>/dev/null); do
-                case " $cands " in *" $f "*) continue ;; esac
-                cands="$cands $f"; _ssstat "$f" n
-            done
+            sls=$(find "$p" -maxdepth 2 -type f -exec stat -c '%a %u %g %G %n' {} + 2>/dev/null)
+            while IFS= read -r sl; do
+                [ -n "$sl" ] || continue
+                f=${sl##* }
+                case " $cands $scripts " in *" $f "*) continue ;; esac
+                case "$f" in
+                    /etc/cron.hourly/*|/etc/cron.daily/*|/etc/cron.weekly/*|/etc/cron.monthly/*|/etc/periodic/*)
+                        scripts="$scripts $f" ;;
+                    *) cands="$cands $f" ;;
+                esac
+                _ssline "$sl" n
+            done <<EOF
+$sls
+EOF
         fi
     done
-    # Wildcard injection scan: awk extracts only the command field to avoid
-    # false-positives on schedule-field wildcards in "* * * * * cmd" lines.
+    # Wildcard injection scan. Cron-format files are parsed per format so
+    # the command field is tested — 7-field system crontabs keep the user
+    # at $6 and the command at $7; anacrontab is 4-field; user spools are
+    # 6-field. Periodic scripts are shell, scanned line-wise separately.
     # Subshell-wrapped so a mid-scan abort cannot leave globbing disabled.
     (
         set -f
-        for f in $cands; do
-            [ -f "$f" ] || continue
-            awk -v fn="$f" '
+        if [ -n "$cands" ]; then
+            awk '
+                # cronscan
+                FNR == 1 {
+                    cf = 6; at = 2
+                    if (FILENAME == "/etc/anacrontab") { cf = 4 }
+                    else if (FILENAME == "/etc/crontab") { cf = 7; at = 3 }
+                    else if (index(FILENAME, "/etc/cron.d/") == 1) { cf = 7; at = 3 }
+                }
                 !/^[[:space:]]*(#|$)/ && !/^[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/ {
-                    cmd = ($1 ~ /^@/) ? $2 : (NF >= 6 ? $6 : $NF)
-                    if (cmd ~ /[*]/) {
+                    cfi = ($1 ~ /^@/) ? at : cf
+                    cmd = (NF >= cfi) ? $cfi : ""
+                    if (cmd != "") {
                         base = cmd; sub(/.*\//, "", base)
-                        if (base ~ /^(tar|rsync|cp|chown|zip)$/)
-                            printf "! wildcard cmd in %s line %d: %s\n", fn, NR, $0
+                        if (base ~ /^(tar|rsync|cp|chown|zip)$/) {
+                            # the glob lives in the arguments, not the command word
+                            for (i = cfi + 1; i <= NF; i++)
+                                if ($i ~ /[*]/) {
+                                    printf "! wildcard cmd in %s line %d: %s\n", FILENAME, FNR, $0
+                                    break
+                                }
+                        }
                     }
-                }' "$f" 2>/dev/null
-        done
+                }
+                # cronscan-end
+            ' $cands 2>/dev/null
+        fi
+        if [ -n "$scripts" ]; then
+            grep -nE '(^|[[:space:];&|(=])(tar|rsync|cp|chown|zip)([[:space:]]+[^#]*)?\*' $scripts 2>/dev/null | \
+                grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' | \
+                while IFS= read -r ln; do printf '! wildcard in script: %s\n' "$ln"; done
+        fi
     )
     if [ -d /run/systemd/system ] && grep -q systemd /proc/1/comm 2>/dev/null; then
         SCT=''
@@ -382,8 +436,9 @@ sec_sched() {
                 while IFS= read -r t; do [ -n "$t" ] && printf '· timer %s\n' "$t"; done
             "$SCT" list-units --type=service --state=running --no-legend --no-pager 2>/dev/null | \
                 awk '{print "· svc " $1}'
-            [ -d /etc/systemd/system ] && find /etc/systemd/system -type f 2>/dev/null | \
-                while IFS= read -r f; do _ssstat "$f" n; done
+            [ -d /etc/systemd/system ] && \
+                find /etc/systemd/system -type f -exec stat -c '%a %u %g %G %n' {} + 2>/dev/null | \
+                while IFS= read -r sl; do _ssline "$sl" n; done
         else
             printf '· systemd present but systemctl not executable — unit checks skipped\n'
         fi
