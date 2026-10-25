@@ -245,6 +245,42 @@ sec_identity() {
 # ---------------------------------------------------------------------------
 # 3. execsurf — SUID/SGID, capabilities, PATH, ld.so
 # ---------------------------------------------------------------------------
+# pathscan
+# PATH-directory writability audit (execsurf helper). Symlinks are
+# resolved with stat -L: a usrmerge /bin symlink's OWN mode is 777 and
+# must not read as a world-writable PATH dir (1.1.0 bug, live on trixie
+# 2026-10-25) — the target directory's mode and owner are what count.
+_pathcheck() {
+    local seen rest d mo u m
+    seen=" "; set --
+    rest="$PATH:"
+    while [ -n "$rest" ]; do
+        d=${rest%%:*}; rest=${rest#*:}
+        [ -z "$d" ] && d=.
+        case "$seen" in *" $d "*) continue ;; esac
+        seen="$seen$d "
+        [ -d "$d" ] && set -- "$@" "$d"
+    done
+    if [ "$#" -gt 0 ]; then
+        if [ "$EUID_N" -eq 0 ]; then
+            # root: [ -w ] is always true — judge by mode bits and owner
+            stat -Lc '%a|%u|%n' "$@" 2>/dev/null | while IFS='|' read -r mo u d; do
+                m=$mo
+                while [ "${#m}" -lt 3 ]; do m="0$m"; done
+                [ "${#m}" -eq 4 ] && m=${m#?}
+                case $m in
+                    ?[2367]?|??[2367]) printf '!! group/world-writable dir in PATH: %s\n' "$d" ;;
+                    [2367]??) [ "$u" != "0" ] && printf '! PATH dir writable by uid %s: %s\n' "$u" "$d" ;;
+                esac
+            done
+        else
+            for d in "$@"; do
+                [ -w "$d" ] && printf '!! writable directory in PATH: %s\n' "$d"
+            done
+        fi
+    fi
+}
+# pathscan-end
 sec_execsurf() {
     local d p gc rest seen have_fa m mnts mnt u
     printf '==[ execution-surfaces ]==\n'
@@ -339,34 +375,7 @@ curl base64 xxd", k, " ")
     elif [ -z "$gc" ]; then
         printf '· getcap not found, capability scan skipped\n'
     fi
-    # collect deduped existing PATH dirs, then one batched stat
-    seen=" "; set --
-    rest="$PATH:"
-    while [ -n "$rest" ]; do
-        d=${rest%%:*}; rest=${rest#*:}
-        [ -z "$d" ] && d=.
-        case "$seen" in *" $d "*) continue ;; esac
-        seen="$seen$d "
-        [ -d "$d" ] && set -- "$@" "$d"
-    done
-    if [ "$#" -gt 0 ]; then
-        if [ "$EUID_N" -eq 0 ]; then
-            # root: [ -w ] is always true — judge by mode bits and owner
-            stat -c '%a|%u|%n' "$@" 2>/dev/null | while IFS='|' read -r mo u d; do
-                m=$mo
-                while [ "${#m}" -lt 3 ]; do m="0$m"; done
-                [ "${#m}" -eq 4 ] && m=${m#?}
-                case $m in
-                    ?[2367]?|??[2367]) printf '!! group/world-writable dir in PATH: %s\n' "$d" ;;
-                    [2367]??) [ "$u" != "0" ] && printf '! PATH dir writable by uid %s: %s\n' "$u" "$d" ;;
-                esac
-            done
-        else
-            for d in "$@"; do
-                [ -w "$d" ] && printf '!! writable directory in PATH: %s\n' "$d"
-            done
-        fi
-    fi
+    _pathcheck
     if [ -f /etc/ld.so.preload ] && [ "$have_fa" ]; then
         if [ -r /etc/ld.so.preload ]; then
             awk '!/^[[:space:]]*(#|$)/ { printf "! /etc/ld.so.preload entry: %s\n", $0 }' \

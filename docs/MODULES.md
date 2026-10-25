@@ -74,7 +74,9 @@ The classic local privilege-escalation surfaces:
 - **PATH audit** — writable directories in PATH. Privilege-calibrated:
   as root, group/world-writable mode bits rate `!!` and a PATH directory
   writable by a non-root owner rates `!` (root executes whatever the
-  owner plants there); non-root uses `[ -w ]`.
+  owner plants there); non-root uses `[ -w ]`. Symlinks are resolved
+  (`stat -L`): a usrmerge `/bin` link is judged by its target
+  directory, not the link's own `777` mode.
 - **Dynamic loader** — `/etc/ld.so.preload` entries; writable
   `/etc/ld.so.conf.d` or group/other-writable loader configs.
 

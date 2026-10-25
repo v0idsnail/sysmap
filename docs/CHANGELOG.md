@@ -16,6 +16,16 @@ follows SemVer.
   had never executed because `at` was missing from its own setup line.
   New `tests/spool-fixture.sh` replays the spool severity table with a
   PATH-shimmed `stat(1)`, no root required.
+- execsurf: the root PATH audit stat'ed PATH directories without `-L`,
+  so a usrmerge symlink's OWN mode 777 read as a world-writable dir —
+  stock trixie printed `!! group/world-writable dir in PATH: /bin`
+  (`/bin -> usr/bin`, target 755). Fires on every merged-/usr distro
+  whose PATH keeps `/bin`/`/sbin` (Debian/Ubuntu default PATH and
+  sudo's secure_path both do); survived dev testing because Arch's
+  post-merge default PATH drops `/bin`. Symlinks are now resolved —
+  the target's mode and owner decide. Found live during the
+  Debian+Docker platform run. New `tests/path-fixture.sh` exercises
+  the audit against a real symlink/dir tree, no root required.
 
 ## [1.1.0] — 2026-10-25
 
