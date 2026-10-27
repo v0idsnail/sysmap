@@ -30,7 +30,9 @@
 #       --fail-on LVL   exit 2 if findings exist at/above the level:
 #                        warn = !! findings · info = any finding
 #   -q, --quiet         findings only — suppress · informational lines
-#       --no-color      (output is plain text by default; reserved)
+#       --no-color      suppress ANSI color (also: NO_COLOR env var; color
+#                        is automatic when stdout is a terminal and the
+#                        output is not --json or -o FILE)
 #       --list-modules  print module names, one per line, exit 0
 #   -V, --version       print version and license, exit 0
 #   -h, --help          print this header, exit 0
@@ -51,7 +53,7 @@
 #           find getcap getenforce grep hostname id ls ps sed ss netstat stat
 #           sudo systemctl systemd-detect-virt tr uname who.
 
-VERSION="1.1.1"
+VERSION="1.2.0"
 
 set -u
 LC_ALL=C
@@ -571,8 +573,23 @@ sec_sched() {
 # 5. netsurf — listening sockets, runtime sockets, resolvers, gateway
 # ---------------------------------------------------------------------------
 _classify_addr() {
-    # $1=addr  $2=port  $3=proto  $4=note(optional)
+    # $1=addr  $2=port  $3=proto  $4=note(optional, "(proc)" or "uid=N")
     local sev
+    # A listening resolver/DHCP daemon on its own service port is this
+    # host's serving role, not an exposure. Process+port match — the
+    # proc names are comm names as ss/netstat report them (15-char
+    # truncation: systemd-resolve, not systemd-resolved). Discovery
+    # protocols (avahi/mDNS 5353, LLMNR 5355) are deliberately NOT
+    # whitelisted: a resolver advertising them is a spoofing surface,
+    # not a serving role.
+    case "$4" in
+        *dnsmasq*|*unbound*|*named*|*systemd-resolve*|*dhcpd*|*kea-dhcp*|*udhcpd*)
+            case "$2" in
+                53|67)
+                    printf '· %s %s:%s (%s — serving role)\n' "$3" "$1" "$2" "$4"
+                    return 0 ;;
+            esac ;;
+    esac
     case "$1" in
         0.0.0.0|::|'*'|'::ffff:0.0.0.0')
             sev='!! ' ;;
@@ -583,6 +600,32 @@ _classify_addr() {
     esac
     printf '%s%s %s:%s%s\n' "$sev" "$3" "$1" "$2" "${4:+ ($4)}"
 }
+# sockscan
+# Reachability of a unix domain socket by an unprivileged process:
+# connect(2) requires search (+x) permission on EVERY ancestor directory,
+# so a world-writable socket inside a 0700 root-owned dir (dockerd 29.x
+# creates /run/docker/*.sock exactly so) is runtime-masked — not a
+# finding. Walks parents from the socket's directory up to /.
+_sock_traversable() {
+    # $1 = socket path · 0 = a non-root process could reach it
+    local p m
+    p=${1%/*}
+    [ -n "$p" ] || p=/
+    while :; do
+        [ -d "$p" ] || return 1
+        m=$(stat -c '%a' "$p" 2>/dev/null) || return 1
+        # other-x present? last mode digit 1/3/5/7 (4-digit setuid/sticky
+        # forms still end in the other-perm digit)
+        case $m in
+            *[1357]) ;;
+            *) return 1 ;;
+        esac
+        [ "$p" = / ] && return 0
+        p=${p%/*}
+        [ -n "$p" ] || p=/
+    done
+}
+# sockscan-end
 sec_netsurf() {
     local ss_bin ns_bin proto la hex_addr hex_port addr port uid_n f m pf st v6
     printf '==[ network-surface ]==\n'
@@ -697,8 +740,17 @@ sec_netsurf() {
             while IFS= read -r f; do
                 m=$(stat -c '%a' "$f" 2>/dev/null)
                 case "${m:-0}" in
-                    *[2367]) printf '!! runtime socket group/world-writable (%s): %s\n' "$m" "$f" ;;
-                    *)       printf '! runtime socket: %s (mode %s)\n' "$f" "${m:-?}" ;;
+                    *[2367])
+                        # writable socket — only a finding if a non-root
+                        # process could actually traverse to it
+                        if _sock_traversable "$f"; then
+                            printf '!! runtime socket group/world-writable (%s): %s\n' "$m" "$f"
+                        else
+                            printf '· runtime socket %s (mode %s, runtime-masked by non-traversable parent)\n' "$f" "$m"
+                        fi ;;
+                    # non-writable socket modes are the runtime's own IPC,
+                    # not an exposure — inventory only
+                    *)  printf '· runtime socket: %s (mode %s)\n' "$f" "${m:-?}" ;;
                 esac
             done
     fi
@@ -726,7 +778,34 @@ sec_netsurf() {
 
 # ---------------------------------------------------------------------------
 # 6. secrets — keys, history, credentials in configs
-# ---------------------------------------------------------------------------
+# histscan
+# Credential-shaped lines in shell/db histories — content scan, the
+# module's one departure from paths-only (documented in MODULES.md).
+# Pattern philosophy (calibrated against linPEAS 2026-10, which takes
+# the opposite bet: its history regex matches "root", "@", "sudo" and
+# was verified to hit "grep password README.md"): recall is worthless
+# here — every pattern demands an ASSIGNMENT or AUTH-FLAG SHAPE, so
+# "grep password README.md" (no =), "cd /root" (no assignment) and
+# every email stay silent. Strong = credential-bearing (!!), weak =
+# secret-shaped variable (!). Empty values suppressed.
+_hist_scan() {
+    # $1 = history file
+    grep -EinH '(pass(word|wd)?|pwd)[[:space:]]*=[[:space:]]*[^[:space:]#"'\'']|--pass(word|wd)[[:space:]]*[^[:space:]-]|sshpass[[:space:]]+-p|authorization:[[:space:]]*(basic|bearer)[[:space:]]+[^[:space:]]' \
+        "$1" 2>/dev/null | \
+    while IFS= read -r ln; do
+        case $ln in
+            *'password=""'*|*"password=''"*|*'passwd=""'*|*"passwd=''"*) continue ;;
+        esac
+        printf '!! history credential indicator %s\n' "$ln"
+    done
+    grep -EinH '(secret|token|api[_-]?key)[[:space:]]*=[[:space:]]*[^[:space:]#]' \
+        "$1" 2>/dev/null | \
+    while IFS= read -r ln; do
+        case $ln in *'=""'*|*"=''"*) continue ;; esac
+        printf '! history secret-shaped variable %s\n' "$ln"
+    done
+}
+# histscan-end
 sec_secrets() {
     local f sz m mm have_find have_stat have_grep ln
     printf '==[ secrets ]==\n'
@@ -772,11 +851,19 @@ sec_secrets() {
     for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
         [ -f "$f" ] && printf '· authorized_keys: %s\n' "$f"
     done
-    for f in /root/.*history /home/*/.*history; do
+    for f in /root/.bash_history /root/.zsh_history /root/.mysql_history \
+             /root/.psql_history /root/.sqlite_history \
+             /home/*/.bash_history /home/*/.zsh_history /home/*/.mysql_history \
+             /home/*/.psql_history /home/*/.sqlite_history \
+             /root/.*history /home/*/.*history; do
+        # main list first, glob catches other shells (fish/atop) — dedup
+        case " $SEENHIST " in *" $f "*) continue ;; esac
+        SEENHIST="$SEENHIST $f "
         [ -f "$f" ] && [ -r "$f" ] && [ -s "$f" ] || continue
         sz=''
         [ "$have_stat" -eq 1 ] && sz=$(stat -c '%s' "$f" 2>/dev/null)
         printf '· history (%s bytes): %s\n' "${sz:-?}" "$f"
+        _hist_scan "$f"
     done
     for f in /root/.docker/config.json /home/*/.docker/config.json; do
         [ -r "$f" ] || continue
@@ -1104,7 +1191,15 @@ if [ -n "$OUT" ] && [ "$OUT" != "-" ]; then
     exec > "$OUT"
     printf 'sysmap: report writing to %s\n' "$OUT" >&2
 fi
-
+# color gate: text mode + stdout is a terminal + NO_COLOR absent/empty.
+# NO_COLOR spec (no-color.org): present AND non-empty disables, value
+# ignored. [ -t 1 ] after the -o redirect tests what we actually write
+# to (terminal or file). --json implies plain text (JSONL must never
+# contain ANSI). The --no-color flag is the explicit override.
+COLOR=0
+if [ "$JSON" -eq 0 ] && [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+    COLOR=1
+fi
 trap 'printf "sysmap: aborted — report incomplete\n" >&2; exit 130' INT TERM HUP
 
 HN=$(hostname 2>/dev/null || cat /etc/hostname 2>/dev/null || uname -n 2>/dev/null || printf 'unknown')
@@ -1143,7 +1238,7 @@ ROOTNOTE=0
 run_survey 2>/dev/null | \
 SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
     -v MODE="$JSON" -v QUIET="$QUIET" -v FAILON="$FAILON" -v NMOD="$NMOD" \
-    -v VER="$VERSION" -v ROOTNOTE="$ROOTNOTE" \
+    -v VER="$VERSION" -v ROOTNOTE="$ROOTNOTE" -v COLOR="$COLOR" \
 '
     BEGIN {
         HOST = ENVIRON["SM_HOST"]
@@ -1151,6 +1246,19 @@ SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
         AUD  = ENVIRON["SM_AUD"]
         TS   = ENVIRON["SM_TS"]
         for (i = 0; i < 256; i++) T[sprintf("%c", i)] = i
+        # ANSI color for text mode — validated across gawk/mawk/busybox:
+        # sprintf("%c",27) = ESC byte in all three. JSONL and file output
+        # never reach here (COLOR=0 by the shell gate).
+        if (COLOR == 1) {
+            E = sprintf("%c", 27)
+            C_HI   = E "[1;31m"    # bold red    — !!
+            C_MED  = E "[1;33m"    # bold yellow — !
+            C_INFO = E "[2m"       # dim         — ·
+            C_HDR  = E "[1m"       # bold        — ==[ module ]==
+            C_RST  = E "[0m"
+        } else {
+            C_HI = C_MED = C_INFO = C_HDR = C_RST = ""
+        }
     }
     function u8clean(s,   i, n, b, len, j, c, ok, out) {
         # LC_ALL=C: one byte per char. Keep valid UTF-8 sequences,
@@ -1213,11 +1321,18 @@ SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
                     esc(TS), esc(HOST), esc(ENG), esc(AUD), esc(mod), sev, esc(line)
             } else {
                 if (sev == "info" && QUIET == 1) next
-                print marker line
+                if (COLOR == 1) {
+                    if (sev == "high")       print C_HI marker C_RST line
+                    else if (sev == "medium") print C_MED marker C_RST line
+                    else                     print C_INFO marker C_RST line
+                } else print marker line
             }
             next
         }
-        if (MODE == 0) print
+        if (MODE == 0) {
+            if (COLOR == 1 && $0 ~ /^==\[ /) print C_HDR $0 C_RST
+            else print
+        }
     }
     END {
         if (MODE == 1) {
@@ -1225,7 +1340,10 @@ SM_HOST="$HN" SM_ENG="$ENG" SM_AUD="$AUDITOR" SM_TS="$NOW" awk \
                 esc(TS), esc(HOST), esc(ENG), esc(AUD), bcount+0, hi+0, med+0, info+0, modfail+0
         } else {
             printf "\n=== summary ===\n"
-            printf "findings: !! %d   ! %d   · %d\n", hi+0, med+0, info+0
+            if (COLOR == 1)
+                printf "findings: %s!!%s %d   %s!%s %d   %s·%s %d\n", C_HI, C_RST, hi+0, C_MED, C_RST, med+0, C_INFO, C_RST, info+0
+            else
+                printf "findings: !! %d   ! %d   · %d\n", hi+0, med+0, info+0
             if (nhi+0 > 0) {
                 printf "\nnotable (!!) findings:\n"
                 cap = nhi; if (cap > 20) cap = 20

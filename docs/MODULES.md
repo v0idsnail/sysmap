@@ -109,12 +109,19 @@ for the same pattern.
 Listening sockets through a three-tier fallback: `ss` → `netstat` → direct
 `/proc/net/{tcp,tcp6,udp,udp6}` parsing with full hex decode (little-endian
 word order, RFC-5952-compressed IPv6, IPv4-mapped addresses rendered
-dotted — no raw hex in reports). Classification per
 listener: all-interfaces binds `!!` unless loopback context justifies them,
-specific-address binds `!`, loopback `·`. Container runtime sockets
+specific-address binds `!`, loopback `·`. A listening resolver/DHCP
+daemon (dnsmasq, unbound, named, systemd-resolve, dhcpd, kea-dhcp4/6,
+udhcpd) on its service port (53/67) is the host's serving role — `·`,
+not a `!!`; discovery protocols (avahi/mDNS 5353, LLMNR 5355) are
+deliberately not whitelisted. Container runtime sockets
 (docker/containerd/crio/podman) under /run, /var/run, /tmp with
-writability analysis. Resolvers, default gateway (decoded from
-`/proc/net/route`), and firewall-tool presence — noted, never executed.
+ancestor-directory traversal analysis: connect(2) on a unix domain
+socket requires +x on every parent (path_resolution(7)), so a
+mode-777 socket inside 0700 dirs (dockerd 29.x pattern) is
+runtime-masked — `·`, not a finding. Resolvers, default gateway
+(decoded from `/proc/net/route`), and firewall-tool presence — noted,
+never executed.
 
 **Reading:** `!! udp 0.0.0.0:5355 (systemd-resolved)` — LLMNR on all
 interfaces is a name-poisoning surface (Responder-class); on a server it is
@@ -123,9 +130,18 @@ usually just disabled in resolved.conf.
 ## secrets
 
 Credential files are reported by **path and mode — their contents are
-never printed**; the one exception is credential *indicators* in fstab
-and package-manager configs, where the matching line is quoted for
-triage (treat those lines as sensitive when sharing the report). SSH
+never printed**; exceptions are (1) credential *indicators* in fstab
+and package-manager configs, and (2) **shell/db history content scan**
+(new in 1.2.0): `.bash_history`, `.zsh_history`, `.mysql_history`,
+`.psql_history`, `.sqlite_history` are content-scanned for
+credential-shaped lines — an assignment (`password=X`) or auth-flag
+(`--password X`, `sshpass -p`, `Authorization: Bearer`) with a
+non-empty value. Strong `!!` (password/sshpass/Authorization) vs
+weak `!` (token=/secret=/api_key=). Pattern philosophy is the inverse
+of recall-first scanners: "grep password README.md" stays silent
+(no assignment shape); every pattern demands `=` or a flag+value
+form. Quoted matched lines are evidence — treat the report as
+containing live credentials and redact accordingly. SSH
 private keys under /root, /home, /etc/ssh with mode-based severity
 calibrated to read bits: group/world-readable `!!` (a mode-0644 key —
 the canonical OpenSSH "Permissions 0644 are too open" case — is the

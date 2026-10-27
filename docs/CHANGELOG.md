@@ -4,6 +4,57 @@ All notable changes to sysmap. Format follows Keep a Changelog; versioning
 follows SemVer.
 
 
+## [1.2.0] — 2026-10-28
+
+Four feature release — context-aware severity, history content scan,
+color output — each designed against live platform evidence and locked
+by new fixtures (socket-fixture, history-fixture; suite is now 6).
+
+### Fixed
+- netsurf: runtime-socket severity now checks ancestor-directory
+  traversal before flagging — connect(2) on a unix domain socket needs
+  +x on every parent dir (path_resolution(7), POSIX §4.13/§4.5), so
+  dockerd 29.x's mode-777 sockets inside its 0700 ExecRoot
+  (/run/docker/) are runtime-masked, not a `!!` finding. Non-writable
+  socket modes (600/755) demoted to `·` inventory. New
+  `tests/socket-fixture.sh` covers the traversal matrix.
+- netsurf: role-aware listener classification — a listening resolver/
+  DHCP daemon (dnsmasq, unbound, named, systemd-resolve, dhcpd,
+  kea-dhcp4/6, udhcpd) on its service port (53/67) is the host's
+  serving role, reported `·`, not a wildcard-binding `!!`. Process+port
+  match; discovery protocols (avahi/mDNS 5353, LLMNR 5355) are
+  deliberately NOT whitelisted — a resolver advertising them is a
+  spoofing surface. Found live on an Arch nftables router where dnsmasq
+  :53/:67 across four legs produced 8+ false highs.
+
+### Added
+- secrets: shell/db history content scan (the module's one departure
+  from paths-only, documented in MODULES.md). Scans
+  ~/.bash_history, ~/.zsh_history, ~/.mysql_history, ~/.psql_history,
+  ~/.sqlite_history for credential-shaped lines — quoting matched lines
+  verbatim as evidence. Pattern philosophy is the inverse of linPEAS's
+  recall-first regex (which matches "root", "@", "sudo", verified):
+  every pattern demands an assignment (`password=X`) or auth-flag
+  (`--password X`, `sshpass -p`, `Authorization: Bearer`) shape;
+  "grep password README.md" stays silent. Strong `!!` (password/
+  sshpass/Authorization) vs weak `!` (token=/secret=/api_key=);
+  empty values suppressed. New `tests/history-fixture.sh` covers
+  both directions.
+- Color-coded severity markers (TTY-gated): `!!` bold red, `!` bold
+  yellow, `·` dim, module headers bold, summary counts colored.
+  Automatically active when stdout is a terminal AND the output is
+  text mode (not `--json`, not `-o FILE`). Suppressed by `--no-color`
+  flag or `NO_COLOR` env var (no-color.org spec: present and non-empty
+  disables, value ignored). JSONL and file output never contain ANSI.
+  ANSI escape injection via `sprintf("%c",27)` — byte-identical across
+  gawk/mawk/busybox awk (verified empirically). Marker-only coloring,
+  never full-line (PEAS-style is unreadable).
+
+### Changed
+- secrets: module contract updated from "paths only" to "paths +
+  pattern hits" for history files. MODULES.md documents the change
+  and its evidence-redaction implications.
+
 ## [1.1.1] — 2026-10-25
 
 ### Fixed
