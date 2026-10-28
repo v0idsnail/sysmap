@@ -851,6 +851,7 @@ sec_secrets() {
     for f in /root/.ssh/authorized_keys /home/*/.ssh/authorized_keys; do
         [ -f "$f" ] && printf '· authorized_keys: %s\n' "$f"
     done
+    SEENHIST=''
     for f in /root/.bash_history /root/.zsh_history /root/.mysql_history \
              /root/.psql_history /root/.sqlite_history \
              /home/*/.bash_history /home/*/.zsh_history /home/*/.mysql_history \
